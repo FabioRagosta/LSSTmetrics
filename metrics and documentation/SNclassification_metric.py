@@ -813,9 +813,8 @@ class SNclassification_metric_DDF(BaseMetric):
     def run(self, dataSlice, slicePoint=None): 
         # Sort the entire dataSlice in order of time.
         dataSlice.sort(order=self.mjdCol)
-        print(dataSlice)
         dataSlice = self.coadd(pd.DataFrame(dataSlice))
-        print(dataSlice)
+        
         # Check that surveyDuration is not larger than the time of observations we obtained.
         # (if it is, then the nTransMax will not be accurate).
         tSpan = (dataSlice[self.mjdCol].max() - dataSlice[self.mjdCol].min()) / 365.25
@@ -1017,7 +1016,7 @@ class SNclassification_metric_DDF(BaseMetric):
                 We run PSNID on the detected light curves, the PSNID output is saved as a string array in the variable r
                 """
                 classify['nDet'][float(z)]= [nDetected, nUnDetected]
-                print(len(listout))
+                
                 if len(listout) >0:
                     start_time_class = time.time()
                     r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_DD.nml'], stderr=subprocess.STDOUT)
@@ -1054,8 +1053,8 @@ class SNclassification_metric_DDF(BaseMetric):
                     classify['Ibc'][float(z)]+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')
                     classify['II'][float(z)]+=np.nansum(line[types[0]+2][sn_II]==b'II')
                     classify['UNKNOWN'][float(z)]+=np.nansum(line[types[0]+2]==b'UNKNOWN')
-                    nClassified+= classify['Ia'][float(z)]+classify['Ibc'][float(z)]+classify['II'][float(z)]
-                    nUnClassified = len(listout)-nClassified                         
+                    
+                                            
                     # confusion matrix
                     CM[float(z)]['Ia']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ia')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
                     CM[float(z)]['Ibc']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ibc')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
@@ -1066,16 +1065,19 @@ class SNclassification_metric_DDF(BaseMetric):
                     CM[float(z)]['Ia']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ia')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
                     CM[float(z)]['Ibc']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ibc')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
                     CM[float(z)]['II']['II']+=np.nansum(line[types[0]+2][sn_II]==b'II')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]=CM[float(z)].fillna(0)
+                    nClassified+= np.nansum(line[types[0]+2][sn_Ia]==b'Ia')+np.nansum(line[types[0]+2][sn_Ia]==b'Ibc')+np.nansum(line[types[0]+2][sn_Ia]==b'II')
+                    +np.nansum(line[types[0]+2][sn_Ibc]==b'Ia')+np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')+np.nansum(line[types[0]+2][sn_Ibc]==b'II')
+                    +np.nansum(line[types[0]+2][sn_II]==b'Ia')+np.nansum(line[types[0]+2][sn_II]==b'Ibc')+np.nansum(line[types[0]+2][sn_II]==b'II')
+                    nUnClassified = len(listout)-nClassified 
                     print('________________________________________')
-                    
-                    print('\n at z ={} for ty= {}, {}-like: Ia={},Ibc={},II={} '.format(z, ty, sn, classify['Ia'][float(z)],classify['Ibc'][float(z)],classify['II'][float(z)]))
+                   
+                    print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
                     
                     classify['nClassified'][float(z)]=[('UnClassified',nUnClassified),('classified',nClassified)]
                     print('total SNe simulated: {}'.format(sn_list))
-                    print('detected:{}, nonDetected:{},classifiable:{}, unclassifiable:{}, classificate:{}, nonClassificate:{}, UNKNWON:{}'.format(nDetected, 
-                                                                                                    nUnDetected,classifiable, unclassifiable-nUnDetected,
-                                                                                                    nClassified,nUnClassified,classify['UNKNOWN'][float(z)])) 
-                    CM[float(z)]=CM[float(z)].fillna(0)
+                    print('detected:{}, nonDetected:{},classifiable:{}, unclassifiable:{}, classified:{}, unclassified:{}, UNKNWON:{}'.format(nDetected,nUnDetected,classifiable, unclassifiable-nUnDetected,nClassified,nUnClassified,classify['UNKNOWN'][float(z)])) 
+                    
                     print(CM[float(z)])
                     print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
                 else:
