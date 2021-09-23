@@ -614,7 +614,7 @@ class getDataMetric(metrics.BaseMetric):
 
 
 
-class SNclassification_metric(BaseMetric):
+class SNclassification_metric_DDF(BaseMetric):
     """
     Parameters:
     ___________
@@ -647,13 +647,13 @@ class SNclassification_metric(BaseMetric):
     __________
     
     OUTPUT:
-        dataout = True, Dictionary containing the coordinates of all the SNe detected, the time of explosions, the number of 
-        detected and no-detected along with the number of classifies, un-classified and mis-classified SNe for each type and the confusion matrix for the classification. 
+        dataout = True, Dictionary containing the coordinates of all the SNe detected, the time of explosions and the number of 
+        detected and no-detected along with the number of classifies, un-classified and mis-classified SNe for each type
         
         dataout = False, fraction of correctly classified SNe
         
     """
-    def __init__(self, metricName='SNclassification_metric', mjdCol='observationStartMJD', 
+    def __init__(self, metricName='SNclassification_metric_DDF', mjdCol='observationStartMJD', 
                  RACol='fieldRA', DecCol='fieldDec',filterCol='filter', m5Col='fiveSigmaDepth', 
                  exptimeCol='visitExposureTime',nightCol='night',vistimeCol='visitTime',
                  surveyDuration=10.,surveyStart=None,observedFilter=['g','r','i'],
@@ -694,13 +694,13 @@ class SNclassification_metric(BaseMetric):
         
         # if you want to get the light curve in output you need to define the metricDtype as object
         if self.dataout:
-            super(SNclassification_metric, self).__init__(col=[self.mjdCol,self.m5Col, self.filterCol,self.RACol,
+            super(SNclassification_metric_DDF, self).__init__(col=[self.mjdCol,self.m5Col, self.filterCol,self.RACol,
                                                                    self.DecCol,self.exptimeCol,self.nightCol,
                                                                    self.vistimeCol],
                                                        metricDtype='object', units='',
                                                        metricName=metricName, **kwargs)
         else:
-            super(SNclassification_metric, self).__init__(col=[self.mjdCol, self.m5Col, self.filterCol],
+            super(SNclassification_metric_DDF, self).__init__(col=[self.mjdCol, self.m5Col, self.filterCol],
                                                        units='Fraction Detected', metricName=metricName,
                                                        **kwargs)
         
@@ -715,7 +715,7 @@ class SNclassification_metric(BaseMetric):
         zmin = self.z[0]
         zmax = self.z[1]
         zstep = self.z[2]
-        temp = template_lc(sn_group= self.templates, z_min=zmin,z_max= zmax,z_step=zstep)
+        temp = template_lc.template_lc(sn_group= self.templates, z_min=zmin,z_max= zmax,z_step=zstep)
         self.obs_template = temp.run()
         self.zrange = temp.zrange
         self.filtri = temp.filtri
@@ -813,7 +813,9 @@ class SNclassification_metric(BaseMetric):
     def run(self, dataSlice, slicePoint=None): 
         # Sort the entire dataSlice in order of time.
         dataSlice.sort(order=self.mjdCol)
+        print(dataSlice)
         dataSlice = self.coadd(pd.DataFrame(dataSlice))
+        print(dataSlice)
         # Check that surveyDuration is not larger than the time of observations we obtained.
         # (if it is, then the nTransMax will not be accurate).
         tSpan = (dataSlice[self.mjdCol].max() - dataSlice[self.mjdCol].min()) / 365.25
@@ -854,8 +856,9 @@ class SNclassification_metric(BaseMetric):
             obs_m5 = dataSlice[self.m5Col][index_filter]
             
             classify =pd.DataFrame(index=self.zrange,columns=['pixId', 'Ia','Ibc','II','UNKNOWN','nDet','nClassified'])
-            classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))
-            CM = pd.DataFrame(columns= ['Ia','Ibc','II'], index= ['Ia','Ibc','II']).fillna(0)
+            classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))           
+            CM ={}
+            
             expldist={}
             temp_list = glob.glob("./template/*.ascii")
             for t in temp_list:
@@ -866,9 +869,12 @@ class SNclassification_metric(BaseMetric):
                 expldist=[]
                 sn_list = 0 # index to count the simulated SNe setted to zero
                 nDetected = 0 # index to count the detected SNe setted to zero
-                nUnDetected = 0 # index to count the no-detected SNe setted to zero               
+                nUnDetected = 0 # index to count the no-detected SNe setted to zero  
+                classifiable = 0
+                unclassifiable = 0
                 listout=[]
                 sn, z = t.split('_')[1],t.split('_')[2].split('=')[1]
+                print([t,sn,z])
                 Ia=['1990N','1992A','1994D','2002bo','1991T','1999ee','1991bg','2000cx','2002cx']
                 Ibc=['2009jf','2008D','1994I','2004aw','2007gr','1998bw']
                 II=['1999em','2004et','2009bw','1999br','1999gi','2005cs','1992H','1993J','2008ax','1987A','2010jl','1998S','1997cy','2005gj','2008es']
@@ -916,8 +922,10 @@ class SNclassification_metric(BaseMetric):
                             
                             mask_class = lcEpoch<30
                             if any(mask_class):
+                                
                                 Dpoint_class = np.sum(lcpoints_AboveThresh[mask_class])
                             else:
+                                
                                 Dpoint_class = 0
                             
                             
@@ -929,7 +937,10 @@ class SNclassification_metric(BaseMetric):
 
                         else:
                             if Dpoint_class>=self.nclass: 
+                                classifiable += 1
                                 listout.append(snname+'\n')
+                            else:
+                                unclassifiable +=1
                                 
 
                         if snname+'\n' in listout:
@@ -1006,17 +1017,26 @@ class SNclassification_metric(BaseMetric):
                 We run PSNID on the detected light curves, the PSNID output is saved as a string array in the variable r
                 """
                 classify['nDet'][float(z)]= [nDetected, nUnDetected]
-              
+                print(len(listout))
                 if len(listout) >0:
                     start_time_class = time.time()
                     r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_DD.nml'], stderr=subprocess.STDOUT)
                     
                     
-                    
+                    CM[float(z)]= pd.DataFrame(columns= ['Ia','Ibc','II'], index= ['Ia','Ibc','II'])
                     classify['Ia'][float(z)]=0
                     classify['Ibc'][float(z)]=0
                     classify['II'][float(z)]=0
                     classify['UNKNOWN'][float(z)]=0
+                    CM[float(z)]['Ia']['Ia']=0
+                    CM[float(z)]['Ibc']['Ia']=0
+                    CM[float(z)]['II']['Ia']=0
+                    CM[float(z)]['Ia']['Ibc']=0
+                    CM[float(z)]['Ibc']['Ibc']=0
+                    CM[float(z)]['II']['Ibc']=0
+                    CM[float(z)]['Ia']['II']=0
+                    CM[float(z)]['Ibc']['II']=0
+                    CM[float(z)]['II']['II']=0
                     nClassified=0
                     
                     
@@ -1030,37 +1050,39 @@ class SNclassification_metric(BaseMetric):
                     sn_Ibc= np.in1d(sn_t,Ibc)
                     sn_II= np.in1d(sn_t,II)
                     
-                    classify['Ia'][float(z)]+=np.sum(line[types[0]+2][sn_Ia]==b'Ia')
-                    classify['Ibc'][float(z)]+=np.sum(line[types[0]+2][sn_Ibc]==b'Ibc')
-                    classify['II'][float(z)]+=np.sum(line[types[0]+2][sn_II]==b'II')
-                    classify['UNKNOWN'][float(z)]+=np.sum(line[types[0]+2]==b'UNKNOWN')
+                    classify['Ia'][float(z)]+=np.nansum(line[types[0]+2][sn_Ia]==b'Ia')
+                    classify['Ibc'][float(z)]+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')
+                    classify['II'][float(z)]+=np.nansum(line[types[0]+2][sn_II]==b'II')
+                    classify['UNKNOWN'][float(z)]+=np.nansum(line[types[0]+2]==b'UNKNOWN')
                     nClassified+= classify['Ia'][float(z)]+classify['Ibc'][float(z)]+classify['II'][float(z)]
                     nUnClassified = len(listout)-nClassified                         
                     # confusion matrix
-                    CM['Ia']['Ia']+=np.sum(line[types[0]+2][sn_Ia]==b'Ia')/(np.sum(sn_Ia)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['Ibc']['Ia']+=np.sum(line[types[0]+2][sn_Ia]==b'Ibc')/(np.sum(sn_Ia)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['II']['Ia']+=np.sum(line[types[0]+2][sn_Ia]==b'II')/(np.sum(sn_Ia)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['Ia']['Ibc']+=np.sum(line[types[0]+2][sn_Ibc]==b'Ia')/(np.sum(sn_Ibc)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['Ibc']['Ibc']+=np.sum(line[types[0]+2][sn_Ibc]==b'Ibc')/(np.sum(sn_Ibc)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['II']['Ibc']+=np.sum(line[types[0]+2][sn_Ibc]==b'II')/(np.sum(sn_Ibc)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['Ia']['II']+=np.sum(line[types[0]+2][sn_II]==b'Ia')/(np.sum(sn_II)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['Ibc']['II']+=np.sum(line[types[0]+2][sn_II]==b'Ibc')/(np.sum(sn_II)-np.sum(line[types[0]+2]==b'UNKNOWN'))
-                    CM['II']['II']+=np.sum(line[types[0]+2][sn_II]==b'II')/(np.sum(sn_II)-np.sum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ia']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ia')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ibc']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ibc')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['II']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'II')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ia']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ibc']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['II']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'II')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ia']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ia')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['Ibc']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ibc')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
+                    CM[float(z)]['II']['II']+=np.nansum(line[types[0]+2][sn_II]==b'II')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
                     print('________________________________________')
-                    print(CM)
+                    
                     print('\n at z ={} for ty= {}, {}-like: Ia={},Ibc={},II={} '.format(z, ty, sn, classify['Ia'][float(z)],classify['Ibc'][float(z)],classify['II'][float(z)]))
                     
                     classify['nClassified'][float(z)]=[('UnClassified',nUnClassified),('classified',nClassified)]
                     print('total SNe simulated: {}'.format(sn_list))
-                    print('detected:{}, nonDetected:{}, classificate:{}, nonClassificate:{}'.format(nDetected, 
-                                                                                                    nUnDetected,
-                                                                                                    nClassified,nUnClassified)) 
+                    print('detected:{}, nonDetected:{},classifiable:{}, unclassifiable:{}, classificate:{}, nonClassificate:{}, UNKNWON:{}'.format(nDetected, 
+                                                                                                    nUnDetected,classifiable, unclassifiable-nUnDetected,
+                                                                                                    nClassified,nUnClassified,classify['UNKNOWN'][float(z)])) 
+                    CM[float(z)]=CM[float(z)].fillna(0)
+                    print(CM[float(z)])
                     print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
                 else:
                     print('\n at z ={} for ty= {}: no classifiable lc '.format(z, ty))
             if self.dataout:
                 explosiontime= np.array(expldist)
-                return {'ConfusionMetric': CM/np.size(self.zrange),'class':classify,'time_expl':expl_t,'SN_coo':[fieldRA,fieldDec]}
+                return {'ConfusionMetric': CM,'class':classify,'time_expl':expl_t,'SN_coo':[fieldRA,fieldDec]}
 
             else:
                 N=np.sum([classify[['Ia','Ibc','II']][z] for z in self.zrange])/len(listout)            
