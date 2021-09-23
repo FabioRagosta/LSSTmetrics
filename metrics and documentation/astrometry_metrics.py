@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Point, Polygon
 import pandas as pd
 from scipy.stats import *
+import scipy.optimize as so 
 from astropy.stats import histogram
 from astropy.io import fits
-import sklearn.mixture.gaussian_mixture as GMM
+from sklearn.mixture import GaussianMixture
 from builtins import zip
 ### LSST dependencies 
 from lsst.sims.maf.metrics import BaseMetric
@@ -20,8 +21,11 @@ from lsst.sims.maf.utils.mafUtils import radec2pix
 from lsst.sims.maf.utils import m52snr, astrom_precision
 sys.path.append('/home/idies/LSST_OpSim/Scripts_NBs/')
 from opsimUtils import *
+from itertools import product 
 
-__all__ = ['sigma_slope_arr','DF','position_selection','simulate_pm','getDataMetric','LSPMmetric','reducedPM','TransienPM']
+__all__ = ['sigma_slope_arr','DF','position_selection','simulate_pm','getDataMetric',
+           'LSPMmetric','reducedPM','TransienPM','RPMD_plot',
+           'find_confidence_interval','PMContourPlot']
 
 def sigma_slope_arr(x, sigmay):
     w = 1./np.array(sigmay)**2
@@ -532,4 +536,350 @@ class TransienPM(BaseMetric):
                 
                 
                 
-                
+def RPMD_plot(cind_dens,H_dens,c_dens,cind_dist,H_dist,c_dist,alpha_dens,err_ell_dens,alpha_dist,err_ell_dist,version='v1.4', xmin=-0.1,xmax=1.999, ymin=5,ymax=21,vmin=0,vmax=0.6,runs=[]):
+    '''
+    This function allows to plot the proper motion measurement in the Hg-color phase space
+    '''
+    import matplotlib.pyplot as plt
+    plt.rc('xtick',labelsize=20)
+    plt.rc('ytick',labelsize=20)
+
+    fig = plt.figure(figsize=(20,20))
+
+    subfigs = fig.subfigures(4, 4, wspace=0.07,hspace=0)
+
+    for outerind, (subfig,(mag, key)) in enumerate(zip(subfigs.flat,product([0,1,2,3],runs))):
+        n=key.split('_')
+        if version in n:
+            n.remove(version)
+            n.remove('10yrs')
+        sep='_'
+        name= sep.join(n)
+
+        axs = subfig.subplots(2, 1,sharex=True)
+        for innerind, (ax,mode) in enumerate(zip(axs.flat,['density','distance'])):
+                    if (mode=='density') and (outerind==0):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.05,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.05,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.05,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.yaxis.set_label_coords(-0.15,0)
+                        ax.set_ylabel('Hg',size=22)
+                        ax.set_xlabel('')
+                        ax.set_title(f'{name}',size=22)
+                        ax.get_xaxis().set_visible(False)
+
+
+                    if mode=='distance'and outerind==0:
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+                    if (mode=='density') and (outerind>=4) and (outerind not in [0,4,8,12,13,14,15]):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+                        ax.get_yaxis().set_visible(False)
+
+                    if (mode=='distance')and (outerind>=4) and (outerind not in [0,4,8,12,13,14,15]):
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+                        ax.get_yaxis().set_visible(False)
+
+                    elif (mode=='density')and (outerind in [4,8]):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.yaxis.set_label_coords(-0.15,0)
+                        ax.set_ylabel('Hg',size=22)       
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+
+
+                    if (mode=='distance') and (outerind in [4,8]):
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+
+
+                    if (mode=='density') and (outerind  in [1,2,3]):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.set_title(f'{name}',size=22)
+                        ax.get_xaxis().set_visible(False)
+                        ax.get_yaxis().set_visible(False)
+
+                    if (mode=='distance') and (outerind  in [1,2,3]):
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+                        ax.get_yaxis().set_visible(False)
+
+
+                    if (mode=='density') and (outerind==12):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.04,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.4,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.04,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.04,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.yaxis.set_label_coords(-0.15,0)
+                        ax.set_ylabel('Hg',size=22)
+                        ax.set_xlabel('')
+
+                    if mode=='distance'and outerind==12:
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.05,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.45,8.9], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.05,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.05,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('g-r',size=22)
+
+                    if (mode=='density') and (outerind in [13,14,15]):
+                        zero_mask = np.where(cind_dens[key][mag]==0)
+                        non_zero_mask = np.where(c_dens[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+    
+                        N=gm.weights_[0]*100
+                        ax.scatter(y=H_dens[key][mag][non_zero_mask],x=c_dens[key][mag][non_zero_mask],
+                                   c=cind_dens[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax+0.01, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dens[key][mag][0],2)),[0.05,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.45,8.9], size=20)
+                        ax.annotate(r'$\Delta m={} mag,$'.format(mag),[0.05,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dens[key][mag])),2),[0.05,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('')
+                        ax.get_xaxis().set_visible(False)
+                        ax.get_yaxis().set_visible(False)
+
+                    if mode=='distance'and outerind in [13,14,15]:
+                        zero_mask = np.where(cind_dist[key][mag]==0)
+                        non_zero_mask = np.where(c_dist[key][mag]!=0)
+                        gplot=np.dstack([H_dens[key][mag],c_dens[key][mag]])
+                        gm = GaussianMixture(n_components=2, random_state=0).fit(gplot[0])
+                        N=gm.weights_[0]*100
+                        im = ax.scatter(y=H_dist[key][mag][non_zero_mask],x=c_dist[key][mag][non_zero_mask],
+                                   c=cind_dist[key][mag][non_zero_mask],cmap='Spectral_r',s=40,vmin=vmin,vmax=0.6,alpha=0.4)
+                        ax.set_xlim([xmin,xmax])
+                        ax.set_ylim([ymin,ymax])
+                        ax.set_yticks(np.arange(ymin, ymax, 4.5))
+                        ax.annotate(r'$\alpha={} ,$'.format(np.round(alpha_dist[key][mag][0],2)),[0.05,8.9], size=20)
+                        ax.annotate(r'$N={}$'.format(np.round(N,2)),[1.45,8], size=20)
+                        ax.annotate(r'$d_{new}=$'+'{} kpc,'.format(np.round(28*10**(mag/5),1)),[0.05,6.9], size=20)
+                        ax.annotate(r'$CI = {} mag^2$'.format(np.round(np.median(err_ell_dist[key][mag])),2),[0.05,10.9], size=20)
+                        ax.invert_yaxis()
+                        ax.set_ylabel('')
+                        ax.set_xlabel('g-r',size=22)
+                        ax.get_yaxis().set_visible(False)
+    plt.tight_layout()
+    plt.subplots_adjust(wspace=0.0, hspace=0.0)   
+    cb_ax = fig.add_axes([1.02, 0.1, 0.02, 0.8])
+    cbar = fig.colorbar(im, cax=cb_ax, extend= 'max')
+    #all_axes = fig.get_axes()
+    #fig.tight_layout()
+    #cax,kw = mpl.colorbar.make_axes([axs for axs in all_axes], aspect=40)
+    #cbar= fig.colorbar(all_axes[0].get_children()[0], extend= 'max',cax=cax,**kw)
+    cbar.ax.set_ylabel('Fraction of objects inside of the error ellipse', size=30)
+    #fig.savefig("ConfunsionIndex_{}.png".format(tup[1]))
+    return subfigs
+
+
+def find_confidence_interval(x, pdf, confidence_level):
+    return pdf[pdf > x].sum() - confidence_level
+def PMContourPlot(cut, contour_id=1):
+    plt.rc('xtick',labelsize=15)
+    plt.rc('ytick',labelsize=15)
+    fig, ax= plt.subplots(1,1,figsize=(10,10))
+
+    ax.set(adjustable='box', aspect=1)
+    alpha= np.random.uniform(0,2*np.pi,np.size(cut['PM']))
+    pm_alpha,pm_delta = cut['PM']*10**3*np.sin(alpha),cut['PM']*10**3*np.cos(alpha) # to convert pm to mas/yr
+    pm_un_alpha, pm_un_delta = cut['PM_out']*10**3*np.sin(alpha),cut['PM_out']*10**3*np.cos(alpha)
+    nbin = 37
+    H, xedges, yedges = np.histogram2d(pm_alpha,pm_delta, bins=(nbin,nbin), normed=True)
+    x_bin_sizes = (xedges[1:] - xedges[:-1]).reshape((1,nbin))
+    y_bin_sizes = (yedges[1:] - yedges[:-1]).reshape((nbin,1))
+
+    pdf = (H*(x_bin_sizes*y_bin_sizes))
+
+    one_sigma = so.brentq(find_confidence_interval, 0., 1., args=(pdf, 0.68))
+    two_sigma = so.brentq(find_confidence_interval, 0., 1., args=(pdf, 0.95))
+    three_sigma = so.brentq(find_confidence_interval, 0., 1., args=(pdf, 0.99))
+    levels = [three_sigma,one_sigma]#,one_sigma]
+
+    X, Y = np.meshgrid(0.5*(xedges[1:]+xedges[:-1]), 0.5*(yedges[1:]+yedges[:-1]))
+    Z = pdf.T
+
+
+    #### plot the contours
+
+    contour = ax.contour(X, Y, Z, levels=levels,colors='black',linewidths=0,extent='both')
+    p =contour.collections[0].get_paths()[contour_id].vertices
+    p_ =contour.collections[1].get_paths()[0].vertices
+    c3s = Polygon(p)
+
+    points = np.column_stack((pm_un_alpha,pm_un_delta))
+    id_p = np.zeros(np.shape(points)[0],dtype=bool)
+    for k,pp in enumerate(points):
+        pp = Point(pp)
+        if not pp.within(c3s):
+            id_p[k] = True
+    ax.plot(p_[:,0],p_[:,1],'-',color='black',lw=2)
+    ax.plot(p[:,0],p[:,1],'-',color='black',lw=2)
+    ax.scatter(pm_un_alpha,pm_un_delta,marker='h',s=10, color='gray',alpha=0.4)
+    ax.scatter(pm_un_alpha[id_p],pm_un_delta[id_p],marker='h',s=10, color='darkorange',alpha =0.7)
+    ax.text(-.7,0.2,r'$3\sigma$',  weight='bold', fontsize=14,color='darkred')
+    ax.text(-.07,0.03,r'$1\sigma$', weight='bold',fontsize=14,color='darkred')
+    ax.set_xlim([-1,1])
+    ax.set_ylim([-1,1])
+    ax.set_xlabel(r'$\mu_{\alpha}$ '+r'$[mas/yr]$',fontsize=16)
+    ax.set_ylabel(r'$\mu_{\delta}$ '+r'$[mas/yr]$',fontsize=16)
+
+    return plt.tight_layout()
+    
