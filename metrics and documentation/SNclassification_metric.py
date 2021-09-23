@@ -614,7 +614,7 @@ class getDataMetric(metrics.BaseMetric):
 
 
 
-class SNclassification_metric_DDF(BaseMetric):
+class SNclassification_metricF(BaseMetric):
     """
     Parameters:
     ___________
@@ -653,7 +653,7 @@ class SNclassification_metric_DDF(BaseMetric):
         dataout = False, fraction of correctly classified SNe
         
     """
-    def __init__(self, metricName='SNclassification_metric_DDF', mjdCol='observationStartMJD', 
+    def __init__(self, metricName='SNclassification_metric', mjdCol='observationStartMJD', 
                  RACol='fieldRA', DecCol='fieldDec',filterCol='filter', m5Col='fiveSigmaDepth', 
                  exptimeCol='visitExposureTime',nightCol='night',vistimeCol='visitTime',
                  surveyDuration=10.,surveyStart=None,observedFilter=['g','r','i'],
@@ -694,13 +694,13 @@ class SNclassification_metric_DDF(BaseMetric):
         
         # if you want to get the light curve in output you need to define the metricDtype as object
         if self.dataout:
-            super(SNclassification_metric_DDF, self).__init__(col=[self.mjdCol,self.m5Col, self.filterCol,self.RACol,
+            super(SNclassification_metric, self).__init__(col=[self.mjdCol,self.m5Col, self.filterCol,self.RACol,
                                                                    self.DecCol,self.exptimeCol,self.nightCol,
                                                                    self.vistimeCol],
                                                        metricDtype='object', units='',
                                                        metricName=metricName, **kwargs)
         else:
-            super(SNclassification_metric_DDF, self).__init__(col=[self.mjdCol, self.m5Col, self.filterCol],
+            super(SNclassification_metric, self).__init__(col=[self.mjdCol, self.m5Col, self.filterCol],
                                                        units='Fraction Detected', metricName=metricName,
                                                        **kwargs)
         
