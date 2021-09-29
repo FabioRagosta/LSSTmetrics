@@ -653,7 +653,7 @@ class SNclassification_metric(BaseMetric):
         dataout = False, fraction of correctly classified SNe
         
     """
-    def __init__(self, metricName='SNclassification_metric', mjdCol='observationStartMJD', 
+    def __init__(self, metricName='SNclassification_metric', LCfolder='./LC', mjdCol='observationStartMJD', 
                  RACol='fieldRA', DecCol='fieldDec',filterCol='filter', m5Col='fiveSigmaDepth', 
                  exptimeCol='visitExposureTime',nightCol='night',vistimeCol='visitTime',
                  surveyDuration=10.,surveyStart=None,observedFilter=['g','r','i'],
@@ -690,7 +690,7 @@ class SNclassification_metric(BaseMetric):
         
         "Paremeters to select the kind of output"
         self.dataout = dataout
-        
+        self.LCfolder = LCfolder
         
         # if you want to get the light curve in output you need to define the metricDtype as object
         if self.dataout:
@@ -706,8 +706,40 @@ class SNclassification_metric(BaseMetric):
         
         
         
-        
-        
+        # PSNID setup
+        if not os.path.exists(self.LCfolder):
+            os.makedirs(self.LCfolder)
+        name = self.LCfolder.split('LC')[-1]
+        self.name=name
+        psnidfile = open( os.environ['LSST_DIR']+'/PSNID_LSST_'+name+'.nml','w')
+        psnid_out =  'JOBNAME_LCFIT:  psnid.exe \n'
+        psnid_out += '#OUTDIR:      /project/kicp/SN/SDSS/dataRelease/temp_psnid_noZprior \n'
+        psnid_out += 'BATCH_INFO:  sbatch SBATCH.TEMPLATE 120 \n'
+        psnid_out += 'VERSION:     LSST \n'
+        psnid_out += ' &SNLCINP \n'
+        psnid_out += '     VERSION_PHOTOMETRY = "LSST" \n'
+        psnid_out += '     PRIVATE_DATA_PATH = "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/{}" \n'.format(self.LCfolder.split('/')[-1])
+        psnid_out += '     SNTABLE_LIST = "SNANA FITRES(text:key)" \n'
+        psnid_out += '     TEXTFILE_PREFIX = "LSST" \n'
+        psnid_out += '     KCOR_FILE= "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric/kcor/kcor_SUDARE.fits" \n'
+        psnid_out += '  &END \n'
+        psnid_out += '  &PSNIDINP \n'
+        psnid_out += '     METHOD_NAME = "BEST" \n'
+        psnid_out += '     FILTLIST_FIT   = "gri"  \n'
+        psnid_out += '     PRIVATE_TEMPLATES_PATH = "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric" \n'
+        psnid_out += '     TEMPLATES_SNIa  = "GRID_SUDARE_mlcs2k2.FITS" \n'
+        psnid_out += '     TEMPLATES_NONIa = "GRID_SUDARE_NON1A.FITS" \n'
+        psnid_out += '     OPT_ZPRIOR  = 0        ! 0=flat, 1=zspec, 2=zphot \n'
+        psnid_out += '     COLOR_MIN   = -1.0     ! minimum \n'
+        psnid_out += '     COLOR_MAX   =  1.0     ! and maximum color value \n'
+        psnid_out += '     NCOLOR      = 41       ! and number of bins to use in grid search \n'
+        psnid_out += '     DMU_MIN     = -2.0 \n'
+        psnid_out += '     DMU_MAX     =  2.0 \n'
+        psnid_out += '     NDMU        =  11 \n'
+        psnid_out += '     MCMC_NSTEP  = 55000 ! number of MCMC steps (set to <=0 to turn off) \n'
+        psnid_out += '  &END \n'
+        psnidfile.write(psnid_out)
+        psnidfile.close()
         # The SN template light curves are simulated at the redshifts in the redshift range  
         # K-correction is applied at each redshift z 
         if not os.path.exists('./template'):
@@ -715,7 +747,7 @@ class SNclassification_metric(BaseMetric):
         zmin = self.z[0]
         zmax = self.z[1]
         zstep = self.z[2]
-        temp = template_lc.template_lc(sn_group= self.templates, z_min=zmin,z_max= zmax,z_step=zstep)
+        temp = template_lc(sn_group= self.templates, z_min=zmin,z_max= zmax,z_step=zstep)
         self.obs_template = temp.run()
         self.zrange = temp.zrange
         self.filtri = temp.filtri
@@ -814,7 +846,6 @@ class SNclassification_metric(BaseMetric):
         # Sort the entire dataSlice in order of time.
         dataSlice.sort(order=self.mjdCol)
         dataSlice = self.coadd(pd.DataFrame(dataSlice))
-        
         # Check that surveyDuration is not larger than the time of observations we obtained.
         # (if it is, then the nTransMax will not be accurate).
         tSpan = (dataSlice[self.mjdCol].max() - dataSlice[self.mjdCol].min()) / 365.25
@@ -854,10 +885,16 @@ class SNclassification_metric(BaseMetric):
             obs = dataSlice[self.mjdCol][index_filter]           
             obs_m5 = dataSlice[self.m5Col][index_filter]
             
-            classify =pd.DataFrame(index=self.zrange,columns=['pixId', 'Ia','Ibc','II','UNKNOWN','nDet','nClassified'])
+            classify =pd.DataFrame(index=self.zrange,columns=['pixId', 'nDet','nFiltered','nClassified'])
             classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))           
-            CM ={}
+            for z in self.zrange:
+                classify['nDet'][float(z)]= np.array((0,0),dtype=[('Detected', np.float32), ('UnDetected', np.float32)])
+                classify['nFiltered'][float(z)] =np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
+                classify['nClassified'][float(z)] =np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
             
+            
+            sn_list = 0
+            listout=[]
             expldist={}
             temp_list = glob.glob("./template/*.ascii")
             for t in temp_list:
@@ -866,12 +903,11 @@ class SNclassification_metric(BaseMetric):
                 """
                 
                 expldist=[]
-                sn_list = 0 # index to count the simulated SNe setted to zero
-                nDetected = 0 # index to count the detected SNe setted to zero
-                nUnDetected = 0 # index to count the no-detected SNe setted to zero  
+                 
+                nDetected = 0 
+                nUnDetected = 0   
                 classifiable = 0
-                unclassifiable = 0
-                listout=[]
+                
                 sn, z = t.split('_')[1],t.split('_')[2].split('=')[1]
                 print([t,sn,z])
                 Ia=['1990N','1992A','1994D','2002bo','1991T','1999ee','1991bg','2000cx','2002cx']
@@ -933,13 +969,14 @@ class SNclassification_metric(BaseMetric):
                         if self.nFilters: 
                             if np.sum(nfilt_class) == np.size(self.nFilters):
                                 listout.append(snname+'\n')
+                                classifiable += 1
+                            
 
                         else:
                             if Dpoint_class>=self.nclass: 
                                 classifiable += 1
                                 listout.append(snname+'\n')
-                            else:
-                                unclassifiable +=1
+                            
                                 
 
                         if snname+'\n' in listout:
@@ -957,7 +994,7 @@ class SNclassification_metric(BaseMetric):
                             snr={}
 
                             output  = 'SURVEY:  LSST \n'                
-                            output += 'SNID: {}_{} \n'.format(sn,k)
+                            output += 'SNID: {}_{}_{} \n'.format(sn,z,k)
                             output += 'IAUC:    UNKNOWN \n'             
                             output +=  'RA:     '+str(fieldRA)+'  deg \n'
                             output +=  'DECL:   '+str(fieldDec)+'  deg \n'
@@ -991,21 +1028,21 @@ class SNclassification_metric(BaseMetric):
                             output +='END: '
 
 
-                            ofile = open(os.path.join('./LC_DDF','LSST_{}_{}_{}_DDF.dat'.format(sn,z,np.round(times,2))),'w')
+                            ofile = open(os.path.join(self.LCfolder,'LSST_{}_{}_{}_DDF.dat'.format(sn,z,np.round(times,2))),'w')
                             ofile.write(output)
                             ofile.close()
 
                     else:
                         nUnDetected += 1
 
-                listsn=open(os.path.join('./LC_DDF','LSST.LIST'),'w')
+                listsn=open(os.path.join(self.LCfolder,'LSST.LIST'),'w')
                 listsn.writelines(listout)
                 listsn.close()
-                if not os.path.exists(os.path.join('./LC_DDF','LSST.README')):
-                    dumbfile=open(os.path.join('./LC_DDF','LSST.README'),'w')
+                if not os.path.exists(os.path.join(self.LCfolder,'LSST.README')):
+                    dumbfile=open(os.path.join(self.LCfolder,'LSST.README'),'w')
                     dumbfile.close()
-                if not os.path.exists(os.path.join('./LC_DDF','LSST.IGNORE')):
-                    dumbfile=open(os.path.join('./LC_DDF','LSST.IGNORE'),'w')
+                if not os.path.exists(os.path.join(self.LCfolder,'LSST.IGNORE')):
+                    dumbfile=open(os.path.join(self.LCfolder,'LSST.IGNORE'),'w')
                     dumbfile.close()    
                 
                 
@@ -1015,79 +1052,91 @@ class SNclassification_metric(BaseMetric):
                 
                 We run PSNID on the detected light curves, the PSNID output is saved as a string array in the variable r
                 """
-                classify['nDet'][float(z)]= [nDetected, nUnDetected]
                 
-                if len(listout) >0:
-                    start_time_class = time.time()
-                    r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_DD.nml'], stderr=subprocess.STDOUT)
-                    
-                    
-                    CM[float(z)]= pd.DataFrame(columns= ['Ia','Ibc','II'], index= ['Ia','Ibc','II'])
-                    classify['Ia'][float(z)]=0
-                    classify['Ibc'][float(z)]=0
-                    classify['II'][float(z)]=0
-                    classify['UNKNOWN'][float(z)]=0
-                    CM[float(z)]['Ia']['Ia']=0
-                    CM[float(z)]['Ibc']['Ia']=0
-                    CM[float(z)]['II']['Ia']=0
-                    CM[float(z)]['Ia']['Ibc']=0
-                    CM[float(z)]['Ibc']['Ibc']=0
-                    CM[float(z)]['II']['Ibc']=0
-                    CM[float(z)]['Ia']['II']=0
-                    CM[float(z)]['Ibc']['II']=0
-                    CM[float(z)]['II']['II']=0
-                    nClassified=0
-                    
-                    
+                classify['nDet'][float(z)]['Detected']+= nDetected
+                classify['nDet'][float(z)]['UnDetected']+= nUnDetected
+                classify['nFiltered'][float(z)]['filtered_class'] += classifiable
+                classify['nFiltered'][float(z)]['not_filtered_class']+= nDetected- classifiable          
+            
+            print(len(listout))
+            CM = {z: pd.DataFrame(columns= ['Ia','Ibc','II','UKNOWN'], index= ['Ia','Ibc','II']) for z in self.zrange}
+            if len(listout) >0:
+                start_time_class = time.time()
+                r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
 
-                    # we search for classification flags in the variable r 
-                    line= np.array(r.split())
-                    custom_split = np.vectorize(self.custom_split)
-                    types = np.where(line==b'type')
-                    sn_t = custom_split(x=line[np.where(line==b'Done')[0]+3],c='_',index=0)
-                    sn_Ia= np.in1d(sn_t,Ia)
-                    sn_Ibc= np.in1d(sn_t,Ibc)
-                    sn_II= np.in1d(sn_t,II)
-                    
-                    classify['Ia'][float(z)]+=np.nansum(line[types[0]+2][sn_Ia]==b'Ia')
-                    classify['Ibc'][float(z)]+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')
-                    classify['II'][float(z)]+=np.nansum(line[types[0]+2][sn_II]==b'II')
-                    classify['UNKNOWN'][float(z)]+=np.nansum(line[types[0]+2]==b'UNKNOWN')
-                    
-                                            
-                    # confusion matrix
-                    CM[float(z)]['Ia']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ia')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['Ibc']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'Ibc')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['II']['Ia']+=np.nansum(line[types[0]+2][sn_Ia]==b'II')/(np.nansum(sn_Ia)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['Ia']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['Ibc']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['II']['Ibc']+=np.nansum(line[types[0]+2][sn_Ibc]==b'II')/(np.nansum(sn_Ibc)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['Ia']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ia')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['Ibc']['II']+=np.nansum(line[types[0]+2][sn_II]==b'Ibc')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]['II']['II']+=np.nansum(line[types[0]+2][sn_II]==b'II')/(np.nansum(sn_II)-np.nansum(line[types[0]+2]==b'UNKNOWN'))
-                    CM[float(z)]=CM[float(z)].fillna(0)
-                    nClassified+= np.nansum(line[types[0]+2][sn_Ia]==b'Ia')+np.nansum(line[types[0]+2][sn_Ia]==b'Ibc')+np.nansum(line[types[0]+2][sn_Ia]==b'II')
-                    +np.nansum(line[types[0]+2][sn_Ibc]==b'Ia')+np.nansum(line[types[0]+2][sn_Ibc]==b'Ibc')+np.nansum(line[types[0]+2][sn_Ibc]==b'II')
-                    +np.nansum(line[types[0]+2][sn_II]==b'Ia')+np.nansum(line[types[0]+2][sn_II]==b'Ibc')+np.nansum(line[types[0]+2][sn_II]==b'II')
-                    nUnClassified = len(listout)-nClassified 
-                    print('________________________________________')
-                   
-                    print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
-                    
-                    classify['nClassified'][float(z)]=[('UnClassified',nUnClassified),('classified',nClassified)]
-                    print('total SNe simulated: {}'.format(sn_list))
-                    print('detected:{}, nonDetected:{},classifiable:{}, unclassifiable:{}, classified:{}, unclassified:{}, UNKNWON:{}'.format(nDetected,nUnDetected,classifiable, unclassifiable-nUnDetected,nClassified,nUnClassified,classify['UNKNOWN'][float(z)])) 
-                    
-                    print(CM[float(z)])
-                    print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
-                else:
-                    print('\n at z ={} for ty= {}: no classifiable lc '.format(z, ty))
+                # we search for classification flags in the variable r 
+                line= np.array(r.split())
+                custom_split = np.vectorize(self.custom_split)
+                types = np.where(line==b'type')
+                sn_t = custom_split(x=line[np.where(line==b'Done')[0]+3],c='_',index=0)
+                z_t = custom_split(x=line[np.where(line==b'Done')[0]+3],c='_',index=1)
+                float_z = np.vectorize(float)
+                z_t = float_z(z_t)
+                z = np.unique(z_t)
+  
+                # confusion matrix
+                for zz in z:
+                    nClassified=0
+                    CM[zz]['Ia']['Ia']=0
+                    CM[zz]['Ibc']['Ia']=0
+                    CM[zz]['II']['Ia']=0
+                    CM[zz]['UKNOWN']['Ia']=0
+                    CM[zz]['Ia']['Ibc']=0
+                    CM[zz]['Ibc']['Ibc']=0
+                    CM[zz]['II']['Ibc']=0
+                    CM[zz]['UKNOWN']['Ibc']=0
+                    CM[zz]['Ia']['II']=0
+                    CM[zz]['Ibc']['II']=0
+                    CM[zz]['II']['II']=0
+                    CM[zz]['UKNOWN']['II']=0
+                    z_index = np.in1d(z_t,[zz])
+                    type_z= line[types[0]+2][z_index]
+                    sn_Ia= np.in1d(sn_t,Ia)[z_index]
+                    sn_Ibc= np.in1d(sn_t,Ibc)[z_index]
+                    sn_II= np.in1d(sn_t,II)[z_index]
+                    CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ia')/(np.nansum(sn_Ia))
+                    CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ibc')/(np.nansum(sn_Ia))
+                    CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]==b'II')/(np.nansum(sn_Ia))
+                    CM[zz]['UKNOWN']['Ia']+=np.nansum(type_z[sn_Ia]==b'UNKNOWN')/(np.nansum(sn_Ia))
+                    CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc))
+                    CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc))
+                    CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'II')/(np.nansum(sn_Ibc))
+                    CM[zz]['UKNOWN']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'UNKNOWN')/(np.nansum(sn_Ibc))
+                    CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]==b'Ia')/(np.nansum(sn_II))
+                    CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]==b'Ibc')/(np.nansum(sn_II))
+                    CM[zz]['II']['II']+=np.nansum(type_z[sn_II]==b'II')/(np.nansum(sn_II))
+                    CM[zz]['UKNOWN']['II']+=np.nansum(type_z[sn_II]==b'UNKNOWN')/(np.nansum(sn_II))
+                    CM[zz]=CM[zz].fillna(0)
+                    nClassified+= np.nansum(type_z[sn_Ia]==b'Ia')+np.nansum(type_z[sn_Ia]==b'Ibc')+np.nansum(type_z[sn_Ia]==b'II')
+                    +np.nansum(type_z[sn_Ibc]==b'Ia')+np.nansum(type_z[sn_Ibc]==b'Ibc')+np.nansum(type_z[sn_Ibc]==b'II')
+                    +np.nansum(type_z[sn_II]==b'Ia')+np.nansum(type_z[sn_II]==b'Ibc')+np.nansum(type_z[sn_II]==b'II')
+                    nUnClassified = classify['nFiltered'][zz]['filtered_class']-nClassified
+                    classify['nClassified'][zz]['classified']+= nClassified
+                    classify['nClassified'][zz]['unclassified']+= nUnClassified 
+                
+                print('________________________________________')
+
+                #print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
+
+                print('total SNe simulated: {}'.format(sn_list))
+                print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][zz]['Detected'],
+                classify['nDet'][zz]['UnDetected'],classify['nFiltered'][zz]['filtered_class'] ,
+                classify['nFiltered'][zz]['not_filtered_class'],
+                classify['nClassified'][zz]['classified'],classify['nClassified'][zz]['unclassified'])) 
+
+                [[print('z= '+str(k)),print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'],
+                classify['nDet'][k]['UnDetected'],classify['nFiltered'][k]['filtered_class'] ,
+                classify['nFiltered'][k]['not_filtered_class'],
+                classify['nClassified'][k]['classified'],classify['nClassified'][k]['unclassified'])) ,print(CM[k])] for k in CM.keys()] 
+                print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
+            else:
+                print('\n  no classifiable lc ')
             if self.dataout:
                 explosiontime= np.array(expldist)
                 return {'ConfusionMetric': CM,'class':classify,'time_expl':expl_t,'SN_coo':[fieldRA,fieldDec]}
 
             else:
-                N=np.sum([classify[['Ia','Ibc','II']][z] for z in self.zrange])/len(listout)            
+                N=(np.sum([classify['nFiltered'][z]['filtered_class'] for z in self.zrange])/len(listout))*(np.sum([classify['nClassified'][z]['classified'] for z in self.zrange])/np.sum([classify['nFiltered'][z]['filtered_class'] for z in self.zrange]))            
                 return float(N)
             
 
