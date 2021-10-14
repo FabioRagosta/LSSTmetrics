@@ -12,16 +12,15 @@ import lsst.sims.maf.metrics as metrics
 import lsst.sims.maf.metricBundles as metricBundles
 import lsst.sims.maf.db as db
 import lsst.sims.maf.plots as plots
-from lsst.sims.utils import equatorialFromGalactic, galacticFromEquatorial
 from lsst.sims.maf.utils import m52snr, radec2pix
 from itertools import groupby
 os.environ['SNANA_DIR']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNANA'
 os.environ['SNDATA_ROOT']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNDATA_ROOT'
-os.environ['LSST_DIR']='./util_snrmetric'
-kcor_dir= './util_snrmetric/'
-metric_dir = './'
+os.environ['LSST_DIR']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric'
+kcor_dir= '/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric/'
+metric_dir = '/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/'
 
-__all__=['template_lc','getDataMetric','SNclassification_metric']
+__all__=['template_lc','getDataMetric','SNclassification_metric','generateSNPopSlicer','sample_spherical']
 
 
 
@@ -628,14 +627,7 @@ class SNclassification_metric(BaseMetric):
         RACol= RA column name from Opsim database      (DEFAULT = fieldRA)
         DecCol= Dec column name from Opsim database      (DEFAULT = fieldDec)
         surveyDuration= Survey Duration      (DEFAULT = 10)
-        surveyStart= Survey start date      (DEFAULT = None)
-        
-   
-    Template parameters:
-        templates= dictionary with all the SNe templates     (DEFAULT= {'Ia':{'Ia':(['1990N','1992A','1994D','2002bo'],100)}})
-        z = array with z min, z max and z step for the redshift range     (DEFAULT= [0.1,1,0.1])
-        explosiontime = times of explosion array      (DEFAULT= None)
-        
+        surveyStart= Survey start date      (DEFAULT = None) 
     
     Detection parameters:
         detectSNR= dictionary with SNR threshold for each filter    (DEFAULT = {'u': 5, 'g': 5, 'r': 5, 'i': 5, 'z': 5, 'y': 5})
@@ -674,12 +666,7 @@ class SNclassification_metric(BaseMetric):
         self.observedFilter = observedFilter
         self.surveyDuration = surveyDuration
         self.surveyStart = surveyStart 
-        
-        "Parameters to generate magnitude for a template lc at different redshits and explosion times"
-        self.templates=templates
-        self.z = z
-        self.explosiontime = explosiontime  
-        
+         
         "Parametes to contrains the detections' selection"
         self.nFilters = nFilters
         self.ndetect = ndetect
@@ -740,30 +727,7 @@ class SNclassification_metric(BaseMetric):
         psnid_out += '  &END \n'
         psnidfile.write(psnid_out)
         psnidfile.close()
-        # The SN template light curves are simulated at the redshifts in the redshift range  
-        # K-correction is applied at each redshift z 
-        if not os.path.exists('./template'):
-            os.makedirs('./template')
-        zmin = self.z[0]
-        zmax = self.z[1]
-        zstep = self.z[2]
-        temp = template_lc(sn_group= self.templates, z_min=zmin,z_max= zmax,z_step=zstep)
-        self.obs_template = temp.run()
-        self.zrange = temp.zrange
-        self.filtri = temp.filtri
-        for j, z in enumerate(self.zrange):
-                for ty in self.templates:       
-                    for sty in self.templates[ty]:
-                        for sn in self.templates[ty][sty][0]:
-                            asciifile = './template/snlc_{}_z={}_DDF.ascii'.format(sn,str(z))
-                            ff = open(asciifile,'w')
-                            if ty in ['Ia','Ibc']:    endTime = 50.*(1+z)
-                            else:                     endTime =100.*(1+z)
-                            for f in self.filtri:
-                                for i,p in enumerate(self.obs_template['phobs'][sn][z][f]):
-                                    if self.obs_template['phobs'][sn][z][f][i] > endTime: break    
-                                    ff.write('{:.2f} {:.3f} {}\n'.format(p,self.obs_template['magobs'][sn][z][f][i],f))
-                            ff.close()
+        
                         
     def read_lightCurve(self, asciifile):
         """Reads in an ascii file, from the simulated ligh curves, 3 columns: epoch, magnitude, filter
@@ -780,7 +744,8 @@ class SNclassification_metric(BaseMetric):
         self.transDuration = self.lcv_template['ph'].max() - self.lcv_template['ph'].min()
 
     def make_lightCurve(self, time, filters):
-        """Turn lightcurve definition into magnitudes at a series of times.
+        """
+        Turn lightcurve definition into magnitudes at a series of times.
 
         Parameters
         ----------
@@ -803,6 +768,11 @@ class SNclassification_metric(BaseMetric):
                                         np.array(self.lcv_template['mag'], float)[fMatch_ascii])
             lcMags[filters == key.decode("utf-8")] = lc_ascii_filter[filters == key.decode("utf-8")]
         return lcMags
+    
+    def sim_mag_noise(self,mag, snr):
+        noise = 2.5*np.log(10)*(snr)**(-1)
+        mag_from_dist = np.random.normal(mag, noise**2)
+        return mag_from_dist
     
     def coadd(self, data):
         """
@@ -854,8 +824,12 @@ class SNclassification_metric(BaseMetric):
         lc = {}
         filterNames = self.observedFilter
         filterN= ''.join(filterNames)
-        fieldRA = np.median(dataSlice['fieldRA']) 
-        fieldDec = np.median(dataSlice['fieldDec'])
+        if slicePoint:
+            fieldRA = slicePoint['ra']
+            fieldDec = slicePoint['dec']
+        else:
+            fieldRA = np.random.choice(dataSlice['fieldRA'])
+            fieldDec = np.random.choice(dataSlice['fieldDec'])
         
         
         expldist=[]
@@ -864,19 +838,6 @@ class SNclassification_metric(BaseMetric):
             surveyStart = dataSlice[self.mjdCol].min()
         else:
             surveyStart = dataSlice[self.mjdCol].min() + 365*self.surveyStart
-        
-        """
-        the array of the explosion dates has three possible setting:
-            self.explosiontime = integer,  it sets the number of dates to drawn randomly from the Opsim database
-            self.explosiontime = None, one date is randomly drawn from the Opsim database
-            self.explosiontime = list or array, it sets the array containing the explosion dates
-        """
-        if isinstance(self.explosiontime, int):
-            expl_t =np.random.choice(dataSlice[self.mjdCol],self.explosiontime)
-        elif  self.explosiontime is None:
-            expl_t=np.random.choice(dataSlice[self.mjdCol],1)
-        elif isinstance(self.explosiontime, (list, tuple, np.ndarray)):
-            expl_t=np.array(self.explosiontime)+surveyStart
                 
         if all(np.in1d(self.observedFilter, dataSlice[self.filterCol])): #check if all the filters for the observed lightcurves are available
             
@@ -885,9 +846,9 @@ class SNclassification_metric(BaseMetric):
             obs = dataSlice[self.mjdCol][index_filter]           
             obs_m5 = dataSlice[self.m5Col][index_filter]
             
-            classify =pd.DataFrame(index=self.zrange,columns=['pixId', 'nDet','nFiltered','nClassified'])
+            classify =pd.DataFrame(index=slicePoint['zrange'],columns=['pixId', 'nDet','nFiltered','nClassified'])
             classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))           
-            for z in self.zrange:
+            for z in slicePoint['zrange']:
                 classify['nDet'][float(z)]= np.array((0,0),dtype=[('Detected', np.float32), ('UnDetected', np.float32)])
                 classify['nFiltered'][float(z)] =np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
                 classify['nClassified'][float(z)] =np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
@@ -912,7 +873,8 @@ class SNclassification_metric(BaseMetric):
                 print([t,sn,z])
                 Ia=['1990N','1992A','1994D','2002bo','1991T','1999ee','1991bg','2000cx','2002cx']
                 Ibc=['2009jf','2008D','1994I','2004aw','2007gr','1998bw']
-                II=['1999em','2004et','2009bw','1999br','1999gi','2005cs','1992H','1993J','2008ax','1987A','2010jl','1998S','1997cy','2005gj','2008es']
+                II=['1999em','2004et','2009bw','1999br','1999gi','2005cs','1992H','1993J',\
+                    '2008ax','1987A','2010jl','1998S','1997cy','2005gj','2008es']
                 if sn in Ia:
                     ty='Ia'
                 if sn in Ibc:
@@ -920,21 +882,23 @@ class SNclassification_metric(BaseMetric):
                 if sn in II:
                     ty='II'
                 self.read_lightCurve(t) # we read the simulated lightcurve at the given z
-                for k,times in enumerate(expl_t):
+                for k,times in enumerate(surveyStart+slicePoint['explosion_times']):
                     sn_list+=1
                     expldist.append(times) 
                     indexlc = np.where((obs>= times) & (obs<=times+self.transDuration)) # we create a mask for all the observation whitin the transient duration
-                    lcEpoch = (obs[indexlc] - times) # define the dates of the phases from the explosion time 
+                    lcEpoch = obs[indexlc] - times # define the dates of the phases from the explosion time 
 
                     if np.size(indexlc)>0: 
-                        lcMags = self.make_lightCurve(lcEpoch, obs_filter[indexlc]) # Generate the observed light curve magnitudes
-                        lcSNR = m52snr(lcMags, obs_m5[indexlc])
-                        lcpoints_AboveThresh = np.zeros(len(lcSNR), dtype=bool) 
+                        lcMags_temp = self.make_lightCurve(lcEpoch, obs_filter[indexlc]) # Generate the observed light curve magnitudes
+                        lcSNR_temp = m52snr(lcMags_temp, obs_m5[indexlc])
+                        lcpoints_AboveThresh = np.zeros(len(lcSNR_temp), dtype=bool) 
+                        sim_mag_noise = np.vectorize(self.sim_mag_noise)
                         nfilt_det = []
                         nfilt_class = []
                         for f in self.observedFilter:                    
                             filtermatch = np.where(obs_filter[indexlc] == f)
-                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR[filtermatch] >= self.detectSNR[f],True,False) # we define a mask for the detected points on the light curve     
+                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,False) # we define a mask for the detected points on the light curve   
+                            
                         Dpoints = np.sum(lcpoints_AboveThresh) #counts the number of detected points
                         if Dpoints>=self.ndetect: 
                             nDetected+=1
@@ -980,14 +944,9 @@ class SNclassification_metric(BaseMetric):
                                 
 
                         if snname+'\n' in listout:
-                            lc = {}
-                            lc["Mags"] = lcMags
-                            lc["filter"] = obs_filter[indexlc]
-                            lc["SNR"] = lcSNR
-                            lc["Epoch"] = obs[indexlc]
-                            lc['detect'] = lcpoints_AboveThresh
+                            
                             # producing a file to pass to PSNID for the classification
-
+                             
                             mag = {}
                             jd = {}
                             merr = {}
@@ -999,21 +958,22 @@ class SNclassification_metric(BaseMetric):
                             output +=  'RA:     '+str(fieldRA)+'  deg \n'
                             output +=  'DECL:   '+str(fieldDec)+'  deg \n'
                             output +=  'MWEBV:    0.0  MW E(B-V) \n'                           
-                            output +=  'REDSHIFT_FINAL:  '+z+' +- '+'%5.3f' % self.z[2]+' (CMB)\n'
+                            output +=  'REDSHIFT_FINAL:  '+z+' +- '+'0.1 (CMB)\n'
                             output +=  'FILTERS:  {}   \n'.format(filterN)               
                             output +=  ' \n'
                             output += '# ======================================\n' 
                             output += '# TERSE LIGHT CURVE OUTPUT\n' 
                             output += '#\n' 
-                            output += 'NOBS: {} \n'.format(np.size(lcMags[lcpoints_AboveThresh])) 
+                            output += 'NOBS: {} \n'.format(np.size(lcMags_temp[lcpoints_AboveThresh])) 
                             output += 'NVAR: 8 \n'
                             output += 'VARLIST:  MJD  FLT FIELD   FLUXCAL   FLUXCALERR   SNR    MAG     MAGERR \n'
+                            lcMags = sim_mag_noise(lcMags_temp[lcpoints_AboveThresh],lcSNR_temp[lcpoints_AboveThresh])
+                            lcSNR = m52snr(lcMags,obs_m5[indexlc][lcpoints_AboveThresh])    
                             for f in filterNames:
-                                filtermatch = np.where(obs_filter[indexlc] == f)
-                                detect= np.array(lc['detect'][filtermatch])
-                                mag[f] = lcMags[filtermatch][detect]
-                                jd[f] = obs[indexlc][filtermatch][detect]
-                                snr[f] = lcSNR[filtermatch][detect]
+                                filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)                                
+                                mag[f] = lcMags[filtermatch]
+                                jd[f] = obs[indexlc][filtermatch]
+                                snr[f] = lcSNR[filtermatch]
                                 merr[f] = 2.5*np.log10(1+1/snr[f])
                                 for h,j in enumerate(jd[f]):
 
@@ -1058,8 +1018,8 @@ class SNclassification_metric(BaseMetric):
                 classify['nFiltered'][float(z)]['filtered_class'] += classifiable
                 classify['nFiltered'][float(z)]['not_filtered_class']+= nDetected- classifiable          
             
-            print(len(listout))
-            CM = {z: pd.DataFrame(columns= ['Ia','Ibc','II','UKNOWN'], index= ['Ia','Ibc','II']) for z in self.zrange}
+            
+            CM = {z: pd.DataFrame(columns= ['Ia','Ibc','II','UKNOWN'], index= ['Ia','Ibc','II']) for z in slicePoint['zrange']}
             if len(listout) >0:
                 start_time_class = time.time()
                 r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
@@ -1133,11 +1093,75 @@ class SNclassification_metric(BaseMetric):
                 print('\n  no classifiable lc ')
             if self.dataout:
                 explosiontime= np.array(expldist)
-                return {'ConfusionMetric': CM,'class':classify,'time_expl':expl_t,'SN_coo':[fieldRA,fieldDec]}
+                return {'ConfusionMetric': CM,'class':classify,'SN_coo':[fieldRA,fieldDec]}
 
             else:
-                N=(np.sum([classify['nFiltered'][z]['filtered_class'] for z in self.zrange])/len(listout))*(np.sum([classify['nClassified'][z]['classified'] for z in self.zrange])/np.sum([classify['nFiltered'][z]['filtered_class'] for z in self.zrange]))            
+                N=(np.sum([classify['nFiltered'][z]['filtered_class'] for z in slicePoint['zrange']])/len(listout))*(np.sum([classify['nClassified'][z]['classified'] for z in slicePoint['zrange']])/np.sum([classify['nFiltered'][z]['filtered_class'] for z in slicePoint['zrange']]))            
                 return float(N)
             
+def sample_spherical(npoints, ndim=2,seed=43):
+    np.random.seed(seed)
+    vec = np.random.randn(ndim, npoints)
+    vec /= np.linalg.norm(vec, axis=0)
+    return np.degrees(vec)
 
+def generateSNPopSlicer(templates= {'Ia':{'Ia':(['1990N','1992A','1994D','2002bo'],100)}}, t_start=1, t_end=3652, t_step=None, n_events=10000, seed=42, zmin=0.1, zmax=0.9,zstep=0.1,coo=None):
+    """ Generate a population of SNe events, and put the info about them
+    into a UserPointSlicer object
+    Parameters
+    ----------
+    
+    templates= dictionary with all the SNe templates   
+    
+    t_start : float (1)
+        first epoch of the epochs range from which the explosion times are drawn (days)
+    t_end : float (3652)
+        final epoch of the epochs range from which the explosion times are drawn (days)
+    n_events : int (10000)
+        The number of SNe events to generate
+    seed : float
+        The seed passed to np.random
+    z_min : float or int (0.1)
+        Minimum reshift
+    z_max : float or int (0.9)
+        Maximum redshift
+    zstep:  float or int(0.1) 
+        redshift step
+    """
 
+    # The SN template light curves are simulated at the redshifts in the redshift range  
+        # K-correction is applied at each redshift z 
+    if not os.path.exists('./template'):
+        os.makedirs('./template')
+    zmin = zmin
+    zmax = zmax
+    zstep = zstep
+    temp = template_lc(sn_group= templates, z_min=zmin,z_max= zmax,z_step=zstep)
+    obs_template = temp.run()
+    zrange = temp.zrange
+    filtri = temp.filtri
+    for j, z in enumerate(zrange):
+            for ty in templates:       
+                for sty in templates[ty]:
+                    for sn in templates[ty][sty][0]:
+                        asciifile = './template/snlc_{}_z={}_DDF.ascii'.format(sn,str(z))
+                        ff = open(asciifile,'w')
+                        for f in filtri:
+                            for i,p in enumerate(obs_template['phobs'][sn][z][f]):   
+                                ff.write('{:.2f} {:.3f} {}\n'.format(p,obs_template['magobs'][sn][z][f][i],f))
+                        ff.close()
+
+    if not t_step:
+        explosion_times = np.random.uniform(low=t_start, high=t_end, size=n_events)
+    else:
+        explosion_times = np.arange(t_start,t_end,t_step)
+    # Set up the slicer to evaluate the catalog we just made
+    if coo:
+        slicer = slicers.UserPointsSlicer(coo['ra'], coo['dec'], latLonDeg=True, badval=0)
+    else:
+        ra, dec = sample_sphere(n_events, seed=seed)
+        slicer = slicers.UserPointsSlicer(ra, dec, latLonDeg=True)
+    # Add any additional information about each object to the slicer
+    slicer.slicePoints['explosion_times'] = explosion_times
+    slicer.slicePoints['zrange'] = zrange
+    return slicer
