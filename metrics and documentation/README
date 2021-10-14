@@ -25,5 +25,5 @@ We estimate the detected points on the light curve according to the observationa
 the latter meaning that the light curve pass the threshold to be injected into the classificator. 
 Finally we inject the simulated observed light curve in PSNID (Sako et al.2011), which is a classification tools available in SNANA.
 
+<img src="flowchart_SNRMetric.png">
 
-![](./flowchart_SNRMetric.png)
