@@ -26,4 +26,4 @@ the latter meaning that the light curve pass the threshold to be injected into t
 Finally we inject the simulated observed light curve in PSNID (Sako et al.2011), which is a classification tools available in SNANA.
 
 
-<img width="434" alt="flowchart_SNRMetric" src="https://user-images.githubusercontent.com/53743894/137270992-8f6aca06-5420-435c-b58c-6d3cd24822a1.png">
+![](./flowchart_SNRMetric.png)
