@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import healpy as hp
 import pandas as pd
+from scipy.stats import norm
 from util_snrmetric import cosmo
 from lsst.sims.maf.metrics import BaseMetric
 import lsst.sims.maf.slicers as slicers
@@ -627,7 +628,14 @@ class SNclassification_metric(BaseMetric):
         RACol= RA column name from Opsim database      (DEFAULT = fieldRA)
         DecCol= Dec column name from Opsim database      (DEFAULT = fieldDec)
         surveyDuration= Survey Duration      (DEFAULT = 10)
-        surveyStart= Survey start date      (DEFAULT = None) 
+        surveyStart= Survey start date      (DEFAULT = None)
+        
+   
+    Template parameters:
+        templates= dictionary with all the SNe templates     (DEFAULT= {'Ia':{'Ia':(['1990N','1992A','1994D','2002bo'],100)}})
+        z = array with z min, z max and z step for the redshift range     (DEFAULT= [0.1,1,0.1])
+        explosiontime = times of explosion array      (DEFAULT= None)
+        
     
     Detection parameters:
         detectSNR= dictionary with SNR threshold for each filter    (DEFAULT = {'u': 5, 'g': 5, 'r': 5, 'i': 5, 'z': 5, 'y': 5})
@@ -645,7 +653,7 @@ class SNclassification_metric(BaseMetric):
         dataout = False, fraction of correctly classified SNe
         
     """
-    def __init__(self, metricName='SNclassification_metric', LCfolder='./LC', mjdCol='observationStartMJD', 
+    def __init__(self, metricName='SNclassification_metric', LCfolder='', mjdCol='observationStartMJD', 
                  RACol='fieldRA', DecCol='fieldDec',filterCol='filter', m5Col='fiveSigmaDepth', 
                  exptimeCol='visitExposureTime',nightCol='night',vistimeCol='visitTime',
                  surveyDuration=10.,surveyStart=None,observedFilter=['g','r','i'],
@@ -666,7 +674,12 @@ class SNclassification_metric(BaseMetric):
         self.observedFilter = observedFilter
         self.surveyDuration = surveyDuration
         self.surveyStart = surveyStart 
-         
+        
+        "Parameters to generate magnitude for a template lc at different redshits and explosion times"
+        self.templates=templates
+        self.z = z
+        self.explosiontime = explosiontime  
+        
         "Parametes to contrains the detections' selection"
         self.nFilters = nFilters
         self.ndetect = ndetect
@@ -744,8 +757,7 @@ class SNclassification_metric(BaseMetric):
         self.transDuration = self.lcv_template['ph'].max() - self.lcv_template['ph'].min()
 
     def make_lightCurve(self, time, filters):
-        """
-        Turn lightcurve definition into magnitudes at a series of times.
+        """Turn lightcurve definition into magnitudes at a series of times.
 
         Parameters
         ----------
@@ -768,11 +780,6 @@ class SNclassification_metric(BaseMetric):
                                         np.array(self.lcv_template['mag'], float)[fMatch_ascii])
             lcMags[filters == key.decode("utf-8")] = lc_ascii_filter[filters == key.decode("utf-8")]
         return lcMags
-    
-    def sim_mag_noise(self,mag, snr):
-        noise = 2.5*np.log(10)*(snr)**(-1)
-        mag_from_dist = np.random.normal(mag, noise**2)
-        return mag_from_dist
     
     def coadd(self, data):
         """
@@ -809,13 +816,19 @@ class SNclassification_metric(BaseMetric):
                              True, True], inplace=True)
 
         return coadd_df.to_records(index=False)
+    def sim_mag_noise(self,mag, snr):
+        noise = 2.5*np.log(10)*(snr)**(-2)
+        mag_from_dist = norm.rvs(mag, noise)
+        return mag_from_dist
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
         return x.split(c)[index]
     def run(self, dataSlice, slicePoint=None): 
         # Sort the entire dataSlice in order of time.
         dataSlice.sort(order=self.mjdCol)
+        #print(dataSlice)
         dataSlice = self.coadd(pd.DataFrame(dataSlice))
+        
         # Check that surveyDuration is not larger than the time of observations we obtained.
         # (if it is, then the nTransMax will not be accurate).
         tSpan = (dataSlice[self.mjdCol].max() - dataSlice[self.mjdCol].min()) / 365.25
@@ -831,13 +844,25 @@ class SNclassification_metric(BaseMetric):
             fieldRA = np.random.choice(dataSlice['fieldRA'])
             fieldDec = np.random.choice(dataSlice['fieldDec'])
         
-        
         expldist=[]
         # We set the survey duration if it is not given as input
         if self.surveyStart is None:
             surveyStart = dataSlice[self.mjdCol].min()
         else:
             surveyStart = dataSlice[self.mjdCol].min() + 365*self.surveyStart
+        
+        """
+        the array of the explosion dates has three possible setting:
+            self.explosiontime = integer,  it sets the number of dates to drawn randomly from the Opsim database
+            self.explosiontime = None, one date is randomly drawn from the Opsim database
+            self.explosiontime = list or array, it sets the array containing the explosion dates
+        """
+        if isinstance(self.explosiontime, int):
+            expl_t =np.random.choice(dataSlice[self.mjdCol],self.explosiontime)
+        elif  self.explosiontime is None:
+            expl_t=np.random.choice(dataSlice[self.mjdCol],1)
+        elif isinstance(self.explosiontime, (list, tuple, np.ndarray)):
+            expl_t=np.array(self.explosiontime)+surveyStart
                 
         if all(np.in1d(self.observedFilter, dataSlice[self.filterCol])): #check if all the filters for the observed lightcurves are available
             
@@ -849,9 +874,9 @@ class SNclassification_metric(BaseMetric):
             classify =pd.DataFrame(index=slicePoint['zrange'],columns=['pixId', 'nDet','nFiltered','nClassified'])
             classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))           
             for z in slicePoint['zrange']:
-                classify['nDet'][float(z)]= np.array((0,0),dtype=[('Detected', np.float32), ('UnDetected', np.float32)])
-                classify['nFiltered'][float(z)] =np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
-                classify['nClassified'][float(z)] =np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
+                classify['nDet'][float(z)]= pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['Detected','UnDetected'])#np.array((0,0),dtype=[('Detected', np.float32), ('UnDetected', np.float32)])
+                classify['nFiltered'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['filtered_class','not_filtered_class'])#np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
+                classify['nClassified'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['classified','unclassified'])#np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
             
             
             sn_list = 0
@@ -865,45 +890,46 @@ class SNclassification_metric(BaseMetric):
                 
                 expldist=[]
                  
-                nDetected = 0 
-                nUnDetected = 0   
-                classifiable = 0
-                
                 sn, z = t.split('_')[1],t.split('_')[2].split('=')[1]
                 print([t,sn,z])
                 Ia=['1990N','1992A','1994D','2002bo','1991T','1999ee','1991bg','2000cx','2002cx']
                 Ibc=['2009jf','2008D','1994I','2004aw','2007gr','1998bw']
-                II=['1999em','2004et','2009bw','1999br','1999gi','2005cs','1992H','1993J',\
-                    '2008ax','1987A','2010jl','1998S','1997cy','2005gj','2008es']
+                II=['1999em','2004et','2009bw','1999br','1999gi','2005cs','1992H','1993J','2008ax','1987A','2010jl','1998S','1997cy','2005gj','2008es']
                 if sn in Ia:
                     ty='Ia'
                 if sn in Ibc:
                     ty='Ibc'
                 if sn in II:
                     ty='II'
+                nDetected = np.array(0, dtype=[(ty,'f4')]) 
+                nUnDetected = np.array(0, dtype=[(ty,'f4')])   
+                classifiable = np.array(0, dtype=[(ty,'f4')])
+                lost = 0
                 self.read_lightCurve(t) # we read the simulated lightcurve at the given z
-                for k,times in enumerate(surveyStart+slicePoint['explosion_times']):
+                for k,times in enumerate(slicePoint['explosion_times']+surveyStart):
                     sn_list+=1
                     expldist.append(times) 
                     indexlc = np.where((obs>= times) & (obs<=times+self.transDuration)) # we create a mask for all the observation whitin the transient duration
-                    lcEpoch = obs[indexlc] - times # define the dates of the phases from the explosion time 
+                    lcEpoch = (obs[indexlc] - times) # define the dates of the phases from the explosion time 
 
                     if np.size(indexlc)>0: 
                         lcMags_temp = self.make_lightCurve(lcEpoch, obs_filter[indexlc]) # Generate the observed light curve magnitudes
                         lcSNR_temp = m52snr(lcMags_temp, obs_m5[indexlc])
                         lcpoints_AboveThresh = np.zeros(len(lcSNR_temp), dtype=bool) 
                         sim_mag_noise = np.vectorize(self.sim_mag_noise)
+                        
+                        
+                        
                         nfilt_det = []
                         nfilt_class = []
                         for f in self.observedFilter:                    
                             filtermatch = np.where(obs_filter[indexlc] == f)
-                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,False) # we define a mask for the detected points on the light curve   
-                            
+                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,False) # we define a mask for the detected points on the light curve     
                         Dpoints = np.sum(lcpoints_AboveThresh) #counts the number of detected points
                         if Dpoints>=self.ndetect: 
-                            nDetected+=1
+                            nDetected[ty]+=1
                         else:
-                            nUnDetected+=1
+                            nUnDetected[ty]+=1
 
                         if self.nFilters:
                             Dpoints =0
@@ -929,16 +955,16 @@ class SNclassification_metric(BaseMetric):
                             
                             
                         
-                        snname='LSST_{}_{}_{}_DDF.dat'.format(sn,z,np.round(times,2))
+                        snname='LSST_{}_{}_{}.dat'.format(sn,z,np.round(times,2))
                         if self.nFilters: 
                             if np.sum(nfilt_class) == np.size(self.nFilters):
                                 listout.append(snname+'\n')
-                                classifiable += 1
+                                classifiable[ty] += 1
                             
 
                         else:
                             if Dpoint_class>=self.nclass: 
-                                classifiable += 1
+                                classifiable[ty] += 1
                                 listout.append(snname+'\n')
                             
                                 
@@ -946,7 +972,7 @@ class SNclassification_metric(BaseMetric):
                         if snname+'\n' in listout:
                             
                             # producing a file to pass to PSNID for the classification
-                             
+
                             mag = {}
                             jd = {}
                             merr = {}
@@ -958,19 +984,20 @@ class SNclassification_metric(BaseMetric):
                             output +=  'RA:     '+str(fieldRA)+'  deg \n'
                             output +=  'DECL:   '+str(fieldDec)+'  deg \n'
                             output +=  'MWEBV:    0.0  MW E(B-V) \n'                           
-                            output +=  'REDSHIFT_FINAL:  '+z+' +- '+'0.1 (CMB)\n'
+                            output +=  'REDSHIFT_FINAL:  '+z+' +- '+'%5.3f' % self.z[2]+' (CMB)\n'
                             output +=  'FILTERS:  {}   \n'.format(filterN)               
                             output +=  ' \n'
                             output += '# ======================================\n' 
                             output += '# TERSE LIGHT CURVE OUTPUT\n' 
                             output += '#\n' 
-                            output += 'NOBS: {} \n'.format(np.size(lcMags_temp[lcpoints_AboveThresh])) 
+                            output += 'NOBS: {} \n'.format(np.sum(lcpoints_AboveThresh)) 
                             output += 'NVAR: 8 \n'
                             output += 'VARLIST:  MJD  FLT FIELD   FLUXCAL   FLUXCALERR   SNR    MAG     MAGERR \n'
+                            
                             lcMags = sim_mag_noise(lcMags_temp[lcpoints_AboveThresh],lcSNR_temp[lcpoints_AboveThresh])
                             lcSNR = m52snr(lcMags,obs_m5[indexlc][lcpoints_AboveThresh])    
                             for f in filterNames:
-                                filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)                                
+                                filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
                                 mag[f] = lcMags[filtermatch]
                                 jd[f] = obs[indexlc][filtermatch]
                                 snr[f] = lcSNR[filtermatch]
@@ -988,12 +1015,12 @@ class SNclassification_metric(BaseMetric):
                             output +='END: '
 
 
-                            ofile = open(os.path.join(self.LCfolder,'LSST_{}_{}_{}_DDF.dat'.format(sn,z,np.round(times,2))),'w')
+                            ofile = open(os.path.join(self.LCfolder,'LSST_{}_{}_{}.dat'.format(sn,z,np.round(times,2))),'w')
                             ofile.write(output)
                             ofile.close()
 
                     else:
-                        nUnDetected += 1
+                        lost += 1
 
                 listsn=open(os.path.join(self.LCfolder,'LSST.LIST'),'w')
                 listsn.writelines(listout)
@@ -1013,87 +1040,97 @@ class SNclassification_metric(BaseMetric):
                 We run PSNID on the detected light curves, the PSNID output is saved as a string array in the variable r
                 """
                 
-                classify['nDet'][float(z)]['Detected']+= nDetected
-                classify['nDet'][float(z)]['UnDetected']+= nUnDetected
-                classify['nFiltered'][float(z)]['filtered_class'] += classifiable
-                classify['nFiltered'][float(z)]['not_filtered_class']+= nDetected- classifiable          
+                classify['nDet'][float(z)]['Detected'][ty]+= nDetected[ty]
+                classify['nDet'][float(z)]['UnDetected'][ty]+= nUnDetected[ty]
+                classify['nFiltered'][float(z)]['filtered_class'][ty] += classifiable[ty]
+                classify['nFiltered'][float(z)]['not_filtered_class'][ty]+= nDetected[ty]- classifiable[ty]          
             
             
             CM = {z: pd.DataFrame(columns= ['Ia','Ibc','II','UKNOWN'], index= ['Ia','Ibc','II']) for z in slicePoint['zrange']}
             if len(listout) >0:
                 start_time_class = time.time()
-                r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
-
-                # we search for classification flags in the variable r 
-                line= np.array(r.split())
-                custom_split = np.vectorize(self.custom_split)
-                types = np.where(line==b'type')
-                sn_t = custom_split(x=line[np.where(line==b'Done')[0]+3],c='_',index=0)
-                z_t = custom_split(x=line[np.where(line==b'Done')[0]+3],c='_',index=1)
-                float_z = np.vectorize(float)
-                z_t = float_z(z_t)
-                z = np.unique(z_t)
-  
-                # confusion matrix
-                for zz in z:
-                    nClassified=0
-                    CM[zz]['Ia']['Ia']=0
-                    CM[zz]['Ibc']['Ia']=0
-                    CM[zz]['II']['Ia']=0
-                    CM[zz]['UKNOWN']['Ia']=0
-                    CM[zz]['Ia']['Ibc']=0
-                    CM[zz]['Ibc']['Ibc']=0
-                    CM[zz]['II']['Ibc']=0
-                    CM[zz]['UKNOWN']['Ibc']=0
-                    CM[zz]['Ia']['II']=0
-                    CM[zz]['Ibc']['II']=0
-                    CM[zz]['II']['II']=0
-                    CM[zz]['UKNOWN']['II']=0
-                    z_index = np.in1d(z_t,[zz])
-                    type_z= line[types[0]+2][z_index]
-                    sn_Ia= np.in1d(sn_t,Ia)[z_index]
-                    sn_Ibc= np.in1d(sn_t,Ibc)[z_index]
-                    sn_II= np.in1d(sn_t,II)[z_index]
-                    CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ia')/(np.nansum(sn_Ia))
-                    CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ibc')/(np.nansum(sn_Ia))
-                    CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]==b'II')/(np.nansum(sn_Ia))
-                    CM[zz]['UKNOWN']['Ia']+=np.nansum(type_z[sn_Ia]==b'UNKNOWN')/(np.nansum(sn_Ia))
-                    CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc))
-                    CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc))
-                    CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'II')/(np.nansum(sn_Ibc))
-                    CM[zz]['UKNOWN']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'UNKNOWN')/(np.nansum(sn_Ibc))
-                    CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]==b'Ia')/(np.nansum(sn_II))
-                    CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]==b'Ibc')/(np.nansum(sn_II))
-                    CM[zz]['II']['II']+=np.nansum(type_z[sn_II]==b'II')/(np.nansum(sn_II))
-                    CM[zz]['UKNOWN']['II']+=np.nansum(type_z[sn_II]==b'UNKNOWN')/(np.nansum(sn_II))
-                    CM[zz]=CM[zz].fillna(0)
-                    nClassified+= np.nansum(type_z[sn_Ia]==b'Ia')+np.nansum(type_z[sn_Ia]==b'Ibc')+np.nansum(type_z[sn_Ia]==b'II')
-                    +np.nansum(type_z[sn_Ibc]==b'Ia')+np.nansum(type_z[sn_Ibc]==b'Ibc')+np.nansum(type_z[sn_Ibc]==b'II')
-                    +np.nansum(type_z[sn_II]==b'Ia')+np.nansum(type_z[sn_II]==b'Ibc')+np.nansum(type_z[sn_II]==b'II')
-                    nUnClassified = classify['nFiltered'][zz]['filtered_class']-nClassified
-                    classify['nClassified'][zz]['classified']+= nClassified
-                    classify['nClassified'][zz]['unclassified']+= nUnClassified 
+                try:
+                    r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
                 
-                print('________________________________________')
+                
+                    # we search for classification flags in the variable r 
+                    line= np.array(r.split())
+                    custom_split = np.vectorize(self.custom_split)
+                    types = np.where(line==b'type')
+                    z_ = np.where(line==b'z_prior')
+                    sn_t = custom_split(x=line[z_[0]-1],c='_',index=0)
+                    z_t = custom_split(x=line[z_[0]-1],c='_',index=1)
+                    float_z = np.vectorize(float)
+                    z_t = float_z(z_t)
+                    z = np.unique(z_t)
 
-                #print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
+                    # confusion matrix
+                    for zz in z:
+                        CM[zz]['Ia']['Ia']=0
+                        CM[zz]['Ibc']['Ia']=0
+                        CM[zz]['II']['Ia']=0
+                        CM[zz]['UKNOWN']['Ia']=0
+                        CM[zz]['Ia']['Ibc']=0
+                        CM[zz]['Ibc']['Ibc']=0
+                        CM[zz]['II']['Ibc']=0
+                        CM[zz]['UKNOWN']['Ibc']=0
+                        CM[zz]['Ia']['II']=0
+                        CM[zz]['Ibc']['II']=0
+                        CM[zz]['II']['II']=0
+                        CM[zz]['UKNOWN']['II']=0
+                        z_index = np.in1d(z_t,[zz])
+                        type_z= line[types[0]+2][z_index]
+                        sn_Ia= np.in1d(sn_t,Ia)[z_index]
+                        sn_Ibc= np.in1d(sn_t,Ibc)[z_index]
+                        sn_II= np.in1d(sn_t,II)[z_index]
+                        CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ia')/(np.nansum(sn_Ia))
+                        CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ibc')/(np.nansum(sn_Ia))
+                        CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]==b'II')/(np.nansum(sn_Ia))
+                        CM[zz]['UKNOWN']['Ia']+=np.nansum(type_z[sn_Ia]==b'UNKNOWN')/(np.nansum(sn_Ia))
+                        CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc))
+                        CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc))
+                        CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'II')/(np.nansum(sn_Ibc))
+                        CM[zz]['UKNOWN']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'UNKNOWN')/(np.nansum(sn_Ibc))
+                        CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]==b'Ia')/(np.nansum(sn_II))
+                        CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]==b'Ibc')/(np.nansum(sn_II))
+                        CM[zz]['II']['II']+=np.nansum(type_z[sn_II]==b'II')/(np.nansum(sn_II))
+                        CM[zz]['UKNOWN']['II']+=np.nansum(type_z[sn_II]==b'UNKNOWN')/(np.nansum(sn_II))
+                        CM[zz]=CM[zz].fillna(0)
+                        for ty in ['Ia','Ibc','II']:                          
+                            if ty=='Ia':
+                                bty = sn_Ia
+                                bt  = b'Ia'
+                            if ty=='Ibc':
+                                bty = sn_Ibc
+                                bt  = b'Ibc'
+                            if ty=='II':
+                                bty = sn_II
+                                bt  = b'II'
+                            nClassified=np.array(0, dtype=[(ty,'f4')])
+                            nClassified[ty]+= np.nansum(type_z[bty]==bt)
+                            nUnClassified = classify['nFiltered'][zz]['filtered_class'][ty]-nClassified[ty]
+                            classify['nClassified'][zz]['classified'][ty]+= nClassified[ty]
+                            classify['nClassified'][zz]['unclassified'][ty]+= nUnClassified 
 
-                print('total SNe simulated: {}'.format(sn_list))
-                print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][zz]['Detected'],
-                classify['nDet'][zz]['UnDetected'],classify['nFiltered'][zz]['filtered_class'] ,
-                classify['nFiltered'][zz]['not_filtered_class'],
-                classify['nClassified'][zz]['classified'],classify['nClassified'][zz]['unclassified'])) 
+                    print('________________________________________')
 
-                [[print('z= '+str(k)),print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'],
-                classify['nDet'][k]['UnDetected'],classify['nFiltered'][k]['filtered_class'] ,
-                classify['nFiltered'][k]['not_filtered_class'],
-                classify['nClassified'][k]['classified'],classify['nClassified'][k]['unclassified'])) ,print(CM[k])] for k in CM.keys()] 
-                print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
+                    #print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
+
+                    print('total SNe simulated: {}; lost SNe: {}'.format(sn_list, lost))
+
+
+                    [[[print('z= '+str(k)+' type='+t),print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'][t],
+                    classify['nDet'][k]['UnDetected'][t],classify['nFiltered'][k]['filtered_class'][t] ,
+                    classify['nFiltered'][k]['not_filtered_class'][t],
+                    classify['nClassified'][k]['classified'][t],classify['nClassified'][k]['unclassified'][t])), print(CM[k])]  for t in ['Ia','Ibc','II']] for k in CM.keys()]
+                    print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
+                except subprocess.CalledProcessError as e:
+                    print(e.output)
             else:
                 print('\n  no classifiable lc ')
             if self.dataout:
                 explosiontime= np.array(expldist)
-                return {'ConfusionMetric': CM,'class':classify,'SN_coo':[fieldRA,fieldDec]}
+                return {'ConfusionMetric': CM,'class':classify,'time_expl':expl_t,'SN_coo':[fieldRA,fieldDec]}
 
             else:
                 N=(np.sum([classify['nFiltered'][z]['filtered_class'] for z in slicePoint['zrange']])/len(listout))*(np.sum([classify['nClassified'][z]['classified'] for z in slicePoint['zrange']])/np.sum([classify['nFiltered'][z]['filtered_class'] for z in slicePoint['zrange']]))            
@@ -1144,7 +1181,7 @@ def generateSNPopSlicer(templates= {'Ia':{'Ia':(['1990N','1992A','1994D','2002bo
             for ty in templates:       
                 for sty in templates[ty]:
                     for sn in templates[ty][sty][0]:
-                        asciifile = './template/snlc_{}_z={}_DDF.ascii'.format(sn,str(z))
+                        asciifile = './template/snlc_{}_z={}_temp.ascii'.format(sn,str(z))
                         ff = open(asciifile,'w')
                         for f in filtri:
                             for i,p in enumerate(obs_template['phobs'][sn][z][f]):   
