@@ -817,7 +817,7 @@ class SNclassification_metric(BaseMetric):
 
         return coadd_df.to_records(index=False)
     def sim_mag_noise(self,mag, snr):
-        noise = 2.5*np.log(10)*(snr)**(-2)
+        noise = 2.5*np.log10(1+1/snr)
         mag_from_dist = norm.rvs(mag, noise)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
