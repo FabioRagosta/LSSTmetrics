@@ -818,7 +818,7 @@ class SNclassification_metric(BaseMetric):
         return coadd_df.to_records(index=False)
     def sim_mag_noise(self,mag, snr):
         noise = 2.5*np.log10(1+1/snr)
-        mag_from_dist = norm.rvs(mag, noise)
+        mag_from_dist = norm.rvs(mag, 3*noise)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
@@ -1122,7 +1122,9 @@ class SNclassification_metric(BaseMetric):
                     [[[print('z= '+str(k)+' type='+t),print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'][t],
                     classify['nDet'][k]['UnDetected'][t],classify['nFiltered'][k]['filtered_class'][t] ,
                     classify['nFiltered'][k]['not_filtered_class'][t],
-                    classify['nClassified'][k]['classified'][t],classify['nClassified'][k]['unclassified'][t])), print(CM[k])]  for t in ['Ia','Ibc','II']] for k in CM.keys()]
+                    classify['nClassified'][k]['classified'][t],classify['nClassified'][k]['unclassified'][t]))]  for t in ['Ia','Ibc','II']] for k in CM.keys()]
+                    
+                    [[print('z= '+str(k)), print(CM[k])] for k in CM.keys()]
                     print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
                 except subprocess.CalledProcessError as e:
                     print(e.output)
