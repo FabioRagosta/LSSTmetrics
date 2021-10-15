@@ -69,7 +69,8 @@ class template_lc:
         self.path = path
         self.dataout = dataout
         self.filtri='gri'
-        self.zrange = np.arange(self.z_min,self.z_max,self.z_step)
+        rounds=np.vectorize(np.round)
+        self.zrange = rounds(np.arange(self.z_min,self.z_max,self.z_step),2)
         self.bandpar={}
         self.band_label= ['bandw','fwhm','avgwv','equvw','zpoint','abmag for vega']
         #landolt & johnson buser and kurucz 78
@@ -872,12 +873,13 @@ class SNclassification_metric(BaseMetric):
             obs_m5 = dataSlice[self.m5Col][index_filter]
             
             classify =pd.DataFrame(index=slicePoint['zrange'],columns=['pixId', 'nDet','nFiltered','nClassified'])
+            
             classify['pixId']=radec2pix(16,np.radians(fieldRA),np.radians(fieldDec))           
             for z in slicePoint['zrange']:
                 classify['nDet'][float(z)]= pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['Detected','UnDetected'])#np.array((0,0),dtype=[('Detected', np.float32), ('UnDetected', np.float32)])
                 classify['nFiltered'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['filtered_class','not_filtered_class'])#np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
                 classify['nClassified'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['classified','unclassified'])#np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
-            
+               
             
             sn_list = 0
             listout=[]
@@ -1177,7 +1179,8 @@ def generateSNPopSlicer(templates= {'Ia':{'Ia':(['1990N','1992A','1994D','2002bo
     zstep = zstep
     temp = template_lc(sn_group= templates, z_min=zmin,z_max= zmax,z_step=zstep)
     obs_template = temp.run()
-    zrange = temp.zrange
+    rounds = np.vectorize(np.round)
+    zrange = rounds(temp.zrange,2)
     filtri = temp.filtri
     for j, z in enumerate(zrange):
             for ty in templates:       
