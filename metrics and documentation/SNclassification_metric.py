@@ -505,7 +505,7 @@ class template_lc:
     def read_template_list(self):
 
         #####
-        print('I\'m reading the templates')
+        print('Reading SN light curve templates')
         ff = open(kcor_dir+'/kcor/sn_template.list')          # read template list/info
         righe = ff.readlines()
         tsn = {}
@@ -719,15 +719,15 @@ class SNclassification_metric(BaseMetric):
         psnid_out += 'VERSION:     LSST \n'
         psnid_out += ' &SNLCINP \n'
         psnid_out += '     VERSION_PHOTOMETRY = "LSST" \n'
-        psnid_out += '     PRIVATE_DATA_PATH = "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/{}" \n'.format(self.LCfolder.split('/')[-1])
+        psnid_out += '     PRIVATE_DATA_PATH = "'+metric_dir+'/{}" \n'.format(self.LCfolder.split('/')[-1])
         psnid_out += '     SNTABLE_LIST = "SNANA FITRES(text:key)" \n'
         psnid_out += '     TEXTFILE_PREFIX = "LSST" \n'
-        psnid_out += '     KCOR_FILE= "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric/kcor/kcor_SUDARE.fits" \n'
+        psnid_out += '     KCOR_FILE= "' +os.environ['LSST_DIR']+'/kcor/kcor_SUDARE.fits" \n'
         psnid_out += '  &END \n'
         psnid_out += '  &PSNIDINP \n'
         psnid_out += '     METHOD_NAME = "BEST" \n'
         psnid_out += '     FILTLIST_FIT   = "gri"  \n'
-        psnid_out += '     PRIVATE_TEMPLATES_PATH = "/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/metrics_and_documentation/util_snrmetric" \n'
+        psnid_out += '     PRIVATE_TEMPLATES_PATH = "'+os.environ['LSST_DIR']+'" \n'
         psnid_out += '     TEMPLATES_SNIa  = "GRID_SUDARE_mlcs2k2.FITS" \n'
         psnid_out += '     TEMPLATES_NONIa = "GRID_SUDARE_NON1A.FITS" \n'
         psnid_out += '     OPT_ZPRIOR  = 0        ! 0=flat, 1=zspec, 2=zphot \n'
@@ -818,8 +818,8 @@ class SNclassification_metric(BaseMetric):
 
         return coadd_df.to_records(index=False)
     def sim_mag_noise(self,mag, snr):
-        noise = 2.5*np.log10(1+1/snr)
-        mag_from_dist = norm.rvs(mag, 3*noise)
+        noise = 2.5*(1/snr)
+        mag_from_dist = norm.rvs(mag, noise)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
@@ -882,6 +882,7 @@ class SNclassification_metric(BaseMetric):
                
             
             sn_list = 0
+            lost = 0
             listout=[]
             expldist={}
             temp_list = glob.glob("./template/*.ascii")
@@ -906,7 +907,6 @@ class SNclassification_metric(BaseMetric):
                 nDetected = np.array(0, dtype=[(ty,'f4')]) 
                 nUnDetected = np.array(0, dtype=[(ty,'f4')])   
                 classifiable = np.array(0, dtype=[(ty,'f4')])
-                lost = 0
                 self.read_lightCurve(t) # we read the simulated lightcurve at the given z
                 for k,times in enumerate(slicePoint['explosion_times']+surveyStart):
                     sn_list+=1
@@ -1003,7 +1003,7 @@ class SNclassification_metric(BaseMetric):
                                 mag[f] = lcMags[filtermatch]
                                 jd[f] = obs[indexlc][filtermatch]
                                 snr[f] = lcSNR[filtermatch]
-                                merr[f] = 2.5*np.log10(1+1/snr[f])
+                                merr[f] = 2.5*(1/snr[f])#2.5*np.log10(1+1/snr[f])
                                 for h,j in enumerate(jd[f]):
 
                                     fl = 10**(-0.4*(mag[f][h]))*1e11
