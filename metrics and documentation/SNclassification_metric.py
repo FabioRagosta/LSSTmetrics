@@ -818,8 +818,7 @@ class SNclassification_metric(BaseMetric):
 
         return coadd_df.to_records(index=False)
     def sim_mag_noise(self,mag, snr):
-        noise = 2.5*(1/snr)
-        mag_from_dist = norm.rvs(mag, noise)
+        mag_from_dist = np.random.multivariate_normal(mag, np.identity(mag.size)*2.5/snr)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
@@ -918,7 +917,7 @@ class SNclassification_metric(BaseMetric):
                         lcMags_temp = self.make_lightCurve(lcEpoch, obs_filter[indexlc]) # Generate the observed light curve magnitudes
                         lcSNR_temp = m52snr(lcMags_temp, obs_m5[indexlc])
                         lcpoints_AboveThresh = np.zeros(len(lcSNR_temp), dtype=bool) 
-                        sim_mag_noise = np.vectorize(self.sim_mag_noise)
+                        
                         
                         
                         
@@ -926,7 +925,7 @@ class SNclassification_metric(BaseMetric):
                         nfilt_class = []
                         for f in self.observedFilter:                    
                             filtermatch = np.where(obs_filter[indexlc] == f)
-                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,False) # we define a mask for the detected points on the light curve     
+                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,lcpoints_AboveThresh[filtermatch]) # we define a mask for the detected points on the light curve     
                         Dpoints = np.sum(lcpoints_AboveThresh) #counts the number of detected points
                         if Dpoints>=self.ndetect: 
                             nDetected[ty]+=1
@@ -996,14 +995,17 @@ class SNclassification_metric(BaseMetric):
                             output += 'NVAR: 8 \n'
                             output += 'VARLIST:  MJD  FLT FIELD   FLUXCAL   FLUXCALERR   SNR    MAG     MAGERR \n'
                             
-                            lcMags = sim_mag_noise(lcMags_temp[lcpoints_AboveThresh],lcSNR_temp[lcpoints_AboveThresh])
-                            lcSNR = m52snr(lcMags,obs_m5[indexlc][lcpoints_AboveThresh])    
+                           
                             for f in filterNames:
                                 filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
-                                mag[f] = lcMags[filtermatch]
-                                jd[f] = obs[indexlc][filtermatch]
-                                snr[f] = lcSNR[filtermatch]
+                                if lcMags_temp[lcpoints_AboveThresh][filtermatch].size>1:
+                                    mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],lcSNR_temp[lcpoints_AboveThresh][filtermatch])
+                                else:
+                                    mag[f] = lcMags_temp[lcpoints_AboveThresh][filtermatch]
+                                jd[f] = obs[indexlc][lcpoints_AboveThresh][filtermatch]
+                                snr[f] = m52snr(mag[f],obs_m5[indexlc][filtermatch]) 
                                 merr[f] = 2.5*(1/snr[f])#2.5*np.log10(1+1/snr[f])
+                                
                                 for h,j in enumerate(jd[f]):
 
                                     fl = 10**(-0.4*(mag[f][h]))*1e11
@@ -1015,8 +1017,7 @@ class SNclassification_metric(BaseMetric):
                                         flerr = fl/1.1
                                     output += 'OBS: %9.3f   %s NULL  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f \n' % (j,f,fl,flerr,snr[f][h],mag[f][h],merr[f][h])
                             output +='END: '
-
-
+                            
                             ofile = open(os.path.join(self.LCfolder,'LSST_{}_{}_{}.dat'.format(sn,z,np.round(times,2))),'w')
                             ofile.write(output)
                             ofile.close()
@@ -1054,18 +1055,19 @@ class SNclassification_metric(BaseMetric):
                 try:
                     r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
                 
-                
+                    
                     # we search for classification flags in the variable r 
                     line= np.array(r.split())
                     custom_split = np.vectorize(self.custom_split)
-                    types = np.where(line==b'type')
                     z_ = np.where(line==b'z_prior')
                     sn_t = custom_split(x=line[z_[0]-1],c='_',index=0)
                     z_t = custom_split(x=line[z_[0]-1],c='_',index=1)
                     float_z = np.vectorize(float)
+                    Pbayes = float_z(line[np.where(line==b'PBayes')[0]+2])
+                    Pbayes= Pbayes.reshape((len(Pbayes)//3,3))
                     z_t = float_z(z_t)
                     z = np.unique(z_t)
-
+                    t = np.array(['Ia','Ibc','II'])
                     # confusion matrix
                     for zz in z:
                         CM[zz]['Ia']['Ia']=0
@@ -1081,35 +1083,37 @@ class SNclassification_metric(BaseMetric):
                         CM[zz]['II']['II']=0
                         CM[zz]['UKNOWN']['II']=0
                         z_index = np.in1d(z_t,[zz])
-                        type_z= line[types[0]+2][z_index]
+                        Pbayes_z = Pbayes[z_index,:]  
+                        Psum = Pbayes[z_index,:].sum(axis=1)
+                        unknown = Psum<0
+                        type_z= t[np.argmax(Pbayes_z,axis=1)]
                         sn_Ia= np.in1d(sn_t,Ia)[z_index]
                         sn_Ibc= np.in1d(sn_t,Ibc)[z_index]
                         sn_II= np.in1d(sn_t,II)[z_index]
-                        CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ia')/(np.nansum(sn_Ia))
-                        CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]==b'Ibc')/(np.nansum(sn_Ia))
-                        CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]==b'II')/(np.nansum(sn_Ia))
-                        CM[zz]['UKNOWN']['Ia']+=np.nansum(type_z[sn_Ia]==b'UNKNOWN')/(np.nansum(sn_Ia))
-                        CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ia')/(np.nansum(sn_Ibc))
-                        CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'Ibc')/(np.nansum(sn_Ibc))
-                        CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'II')/(np.nansum(sn_Ibc))
-                        CM[zz]['UKNOWN']['Ibc']+=np.nansum(type_z[sn_Ibc]==b'UNKNOWN')/(np.nansum(sn_Ibc))
-                        CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]==b'Ia')/(np.nansum(sn_II))
-                        CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]==b'Ibc')/(np.nansum(sn_II))
-                        CM[zz]['II']['II']+=np.nansum(type_z[sn_II]==b'II')/(np.nansum(sn_II))
-                        CM[zz]['UKNOWN']['II']+=np.nansum(type_z[sn_II]==b'UNKNOWN')/(np.nansum(sn_II))
+                        CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]=='Ia')/(np.nansum(sn_Ia))
+                        CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]=='Ibc')/(np.nansum(sn_Ia))
+                        CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]=='II')/(np.nansum(sn_Ia))
+                        CM[zz]['UKNOWN']['Ia']+=np.nansum(unknown[sn_Ia])/(np.nansum(sn_Ia))
+                        CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]=='Ia')/(np.nansum(sn_Ibc))
+                        CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]=='Ibc')/(np.nansum(sn_Ibc))
+                        CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]=='II')/(np.nansum(sn_Ibc))
+                        CM[zz]['UKNOWN']['Ibc']+=np.nansum(unknown[sn_Ibc])/(np.nansum(sn_Ibc))
+                        CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]=='Ia')/(np.nansum(sn_II))
+                        CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]=='Ibc')/(np.nansum(sn_II))
+                        CM[zz]['II']['II']+=np.nansum(type_z[sn_II]=='II')/(np.nansum(sn_II))
+                        CM[zz]['UKNOWN']['II']+=np.nansum(unknown[sn_II])/(np.nansum(sn_II))
                         CM[zz]=CM[zz].fillna(0)
                         for ty in ['Ia','Ibc','II']:                          
                             if ty=='Ia':
                                 bty = sn_Ia
-                                bt  = b'Ia'
+                               
                             if ty=='Ibc':
                                 bty = sn_Ibc
-                                bt  = b'Ibc'
+                                
                             if ty=='II':
-                                bty = sn_II
-                                bt  = b'II'
+                                bty = sn_II                               
                             nClassified=np.array(0, dtype=[(ty,'f4')])
-                            nClassified[ty]+= np.nansum(type_z[bty]==bt)
+                            nClassified[ty]+= np.nansum(type_z[bty]==ty)
                             nUnClassified = classify['nFiltered'][zz]['filtered_class'][ty]-nClassified[ty]
                             classify['nClassified'][zz]['classified'][ty]+= nClassified[ty]
                             classify['nClassified'][zz]['unclassified'][ty]+= nUnClassified 
