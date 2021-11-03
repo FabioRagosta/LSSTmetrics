@@ -14,6 +14,7 @@ import lsst.sims.maf.metricBundles as metricBundles
 import lsst.sims.maf.db as db
 import lsst.sims.maf.plots as plots
 from lsst.sims.maf.utils import m52snr, radec2pix
+from lsst.sims.photUtils import Bandpass, SignalToNoise, PhotometricParameters
 from itertools import groupby
 os.environ['SNANA_DIR']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNANA'
 os.environ['SNDATA_ROOT']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNDATA_ROOT'
@@ -706,10 +707,13 @@ class SNclassification_metric(BaseMetric):
                                                        **kwargs)
         
         
-        
+        self.bandpass = Bandpass(wavelen=np.array([480.2,623.1,754.2]),sb=np.array([0.1,0.1,0.1]),wavelen_min=400, wavelen_max=800, wavelen_step=10)
+        self.photparam = PhotometricParameters() 
         # PSNID setup
         if not os.path.exists(self.LCfolder):
             os.makedirs(self.LCfolder)
+        if not os.path.exists(self.LCfolder+'_notfiltered'):
+            os.makedirs(self.LCfolder+'_notfiltered')
         name = self.LCfolder.split('LC')[-1]
         self.name=name
         psnidfile = open( os.environ['LSST_DIR']+'/PSNID_LSST_'+name+'.nml','w')
@@ -720,9 +724,10 @@ class SNclassification_metric(BaseMetric):
         psnid_out += ' &SNLCINP \n'
         psnid_out += '     VERSION_PHOTOMETRY = "LSST" \n'
         psnid_out += '     PRIVATE_DATA_PATH = "'+metric_dir+'/{}" \n'.format(self.LCfolder.split('/')[-1])
-        psnid_out += '     SNTABLE_LIST = "SNANA FITRES(text:key)" \n'
+        psnid_out += '     SNTABLE_LIST = "SNANA(text:key) FITRES(text:key) LCPLOT(text:key)" \n'
         psnid_out += '     TEXTFILE_PREFIX = "LSST" \n'
         psnid_out += '     KCOR_FILE= "' +os.environ['LSST_DIR']+'/kcor/kcor_SUDARE.fits" \n'
+        psnid_out += '     NFIT_ITERATION = 3 \n'
         psnid_out += '  &END \n'
         psnid_out += '  &PSNIDINP \n'
         psnid_out += '     METHOD_NAME = "BEST" \n'
@@ -818,7 +823,8 @@ class SNclassification_metric(BaseMetric):
 
         return coadd_df.to_records(index=False)
     def sim_mag_noise(self,mag, snr):
-        mag_from_dist = np.random.multivariate_normal(mag, np.identity(mag.size)*2.5/snr)
+        noise = 1.08/snr
+        mag_from_dist = np.random.multivariate_normal(mag, np.identity(mag.size)*noise)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
@@ -828,7 +834,9 @@ class SNclassification_metric(BaseMetric):
         dataSlice.sort(order=self.mjdCol)
         #print(dataSlice)
         dataSlice = self.coadd(pd.DataFrame(dataSlice))
-        
+        bandpass = self.bandpass
+        photparam = self.photparam
+        calcSNR_m5=np.vectorize(SignalToNoise.calcSNR_m5)
         # Check that surveyDuration is not larger than the time of observations we obtained.
         # (if it is, then the nTransMax will not be accurate).
         tSpan = (dataSlice[self.mjdCol].max() - dataSlice[self.mjdCol].min()) / 365.25
@@ -879,12 +887,11 @@ class SNclassification_metric(BaseMetric):
                 classify['nFiltered'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['filtered_class','not_filtered_class'])#np.array((0,0),dtype=[('filtered_class', np.float32), ('not_filtered_class', np.float32)])
                 classify['nClassified'][float(z)] =pd.DataFrame([[0,0],[0,0],[0,0]],index=['Ia','Ibc','II'],columns=['classified','unclassified'])#np.array((0,0),dtype=[('classified', np.float32), ('unclassified', np.float32)])
                
-            
-            sn_list = 0
-            lost = 0
-            listout=[]
-            expldist={}
             temp_list = glob.glob("./template/*.ascii")
+            sn_list = {t:{z:0 for z in slicePoint['zrange']} for t in ['Ia','Ibc','II']}
+            lost = {t:{z:0 for z in slicePoint['zrange']} for t in ['Ia','Ibc','II']}
+            listout=[]
+            expldist={}            
             for t in temp_list:
                 """
                 Observed light curve simulation step:
@@ -908,15 +915,15 @@ class SNclassification_metric(BaseMetric):
                 classifiable = np.array(0, dtype=[(ty,'f4')])
                 self.read_lightCurve(t) # we read the simulated lightcurve at the given z
                 for k,times in enumerate(slicePoint['explosion_times']+surveyStart):
-                    sn_list+=1
+                    sn_list[ty][float(z)] +=1
                     expldist.append(times) 
                     indexlc = np.where((obs>= times) & (obs<=times+self.transDuration)) # we create a mask for all the observation whitin the transient duration
                     lcEpoch = (obs[indexlc] - times) # define the dates of the phases from the explosion time 
 
                     if np.size(indexlc)>0: 
                         lcMags_temp = self.make_lightCurve(lcEpoch, obs_filter[indexlc]) # Generate the observed light curve magnitudes
-                        lcSNR_temp = m52snr(lcMags_temp, obs_m5[indexlc])
-                        lcpoints_AboveThresh = np.zeros(len(lcSNR_temp), dtype=bool) 
+                        lcSNR,_ = calcSNR_m5(lcMags_temp, bandpass, obs_m5[indexlc], photparam)
+                        lcpoints_AboveThresh = np.zeros(len(lcSNR), dtype=bool) 
                         
                         
                         
@@ -925,7 +932,7 @@ class SNclassification_metric(BaseMetric):
                         nfilt_class = []
                         for f in self.observedFilter:                    
                             filtermatch = np.where(obs_filter[indexlc] == f)
-                            lcpoints_AboveThresh[filtermatch] = np.where(lcSNR_temp[filtermatch] >= self.detectSNR[f],True,lcpoints_AboveThresh[filtermatch]) # we define a mask for the detected points on the light curve     
+                            lcpoints_AboveThresh[filtermatch] = np.where(lcMags_temp[filtermatch] <= obs_m5[indexlc][filtermatch],True,lcpoints_AboveThresh[filtermatch])#np.where(lcSNR[filtermatch] >= self.detectSNR[f],True,lcpoints_AboveThresh[filtermatch]) # we define a mask for the detected points on the light curve     
                         Dpoints = np.sum(lcpoints_AboveThresh) #counts the number of detected points
                         if Dpoints>=self.ndetect: 
                             nDetected[ty]+=1
@@ -970,60 +977,60 @@ class SNclassification_metric(BaseMetric):
                             
                                 
 
-                        if snname+'\n' in listout:
+                        
                             
-                            # producing a file to pass to PSNID for the classification
+                        # producing a file to pass to PSNID for the classification
 
-                            mag = {}
-                            jd = {}
-                            merr = {}
-                            snr={}
+                        mag = {}
+                        jd = {}
+                        merr = {}
+                        snr={}
 
-                            output  = 'SURVEY:  LSST \n'                
-                            output += 'SNID: {}_{}_{} \n'.format(sn,z,k)
-                            output += 'IAUC:    UNKNOWN \n'             
-                            output +=  'RA:     '+str(fieldRA)+'  deg \n'
-                            output +=  'DECL:   '+str(fieldDec)+'  deg \n'
-                            output +=  'MWEBV:    0.0  MW E(B-V) \n'                           
-                            output +=  'REDSHIFT_FINAL:  '+z+' +- '+'%5.3f' % self.z[2]+' (CMB)\n'
-                            output +=  'FILTERS:  {}   \n'.format(filterN)               
-                            output +=  ' \n'
-                            output += '# ======================================\n' 
-                            output += '# TERSE LIGHT CURVE OUTPUT\n' 
-                            output += '#\n' 
-                            output += 'NOBS: {} \n'.format(np.sum(lcpoints_AboveThresh)) 
-                            output += 'NVAR: 8 \n'
-                            output += 'VARLIST:  MJD  FLT FIELD   FLUXCAL   FLUXCALERR   SNR    MAG     MAGERR \n'
-                            
-                           
-                            for f in filterNames:
-                                filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
-                                if lcMags_temp[lcpoints_AboveThresh][filtermatch].size>1:
-                                    mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],lcSNR_temp[lcpoints_AboveThresh][filtermatch])
-                                else:
-                                    mag[f] = lcMags_temp[lcpoints_AboveThresh][filtermatch]
-                                jd[f] = obs[indexlc][lcpoints_AboveThresh][filtermatch]
-                                snr[f] = m52snr(mag[f],obs_m5[indexlc][filtermatch]) 
-                                merr[f] = 2.5*(1/snr[f])#2.5*np.log10(1+1/snr[f])
-                                
-                                for h,j in enumerate(jd[f]):
+                        output  = 'SURVEY:  LSST \n'                
+                        output += 'SNID: {}_{}_{} \n'.format(sn,z,k)
+                        output += 'IAUC:    UNKNOWN \n'             
+                        output +=  'RA:     '+str(fieldRA)+'  deg \n'
+                        output +=  'DECL:   '+str(fieldDec)+'  deg \n'
+                        output +=  'MWEBV:    0.0  MW E(B-V) \n'                           
+                        output +=  'REDSHIFT_FINAL:  '+z+' +- '+'%5.3f' % self.z[2]+' (CMB)\n'
+                        output +=  'FILTERS:  {}   \n'.format(filterN)               
+                        output +=  ' \n'
+                        output += '# ======================================\n' 
+                        output += '# TERSE LIGHT CURVE OUTPUT\n' 
+                        output += '#\n' 
+                        output += 'NOBS: {} \n'.format(np.sum(lcpoints_AboveThresh)) 
+                        output += 'NVAR: 8 \n'
+                        output += 'VARLIST:  MJD  FLT FIELD   FLUXCAL   FLUXCALERR   SNR    MAG     MAGERR \n'
 
-                                    fl = 10**(-0.4*(mag[f][h]))*1e11
-                                    if snr[f][h]>1: 
 
-                                        flerr = fl/snr[f][h]/1.3
-                                    else: 
+                        for f in filterNames:
+                            filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
+                            if lcMags_temp[lcpoints_AboveThresh][filtermatch].size>1:
+                                mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],lcSNR[lcpoints_AboveThresh][filtermatch])
+                            else:
+                                mag[f] = lcMags_temp[lcpoints_AboveThresh][filtermatch]
+                            jd[f] = obs[indexlc][lcpoints_AboveThresh][filtermatch]
+                            snr[f]= lcSNR[lcpoints_AboveThresh][filtermatch]
+                            merr[f] = np.sqrt((1./snr[f])**2+(10**(-0.4*mag[f]))*dataSlice[self.vistimeCol][filtermatch])
 
-                                        flerr = fl/1.1
-                                    output += 'OBS: %9.3f   %s NULL  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f \n' % (j,f,fl,flerr,snr[f][h],mag[f][h],merr[f][h])
-                            output +='END: '
-                            
+                            for h,j in enumerate(jd[f]):
+
+                                fl = 10**(-0.4*(mag[f][h]))*1e11
+                                flerr = fl*merr[f][h]*0.92
+
+                                output += 'OBS: %9.3f   %s NULL  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f \n' % (j,f,fl,flerr,snr[f][h],mag[f][h],merr[f][h])
+                        output +='END: '
+                        if snname+'\n' in listout:    
                             ofile = open(os.path.join(self.LCfolder,'LSST_{}_{}_{}.dat'.format(sn,z,np.round(times,2))),'w')
+                            ofile.write(output)
+                            ofile.close()
+                        else:
+                            ofile = open(os.path.join(self.LCfolder+'_notfiltered','LSST_{}_{}_{}.dat'.format(sn,z,np.round(times,2))),'w')
                             ofile.write(output)
                             ofile.close()
 
                     else:
-                        lost += 1
+                        lost[ty][float(z)] += 1
 
                 listsn=open(os.path.join(self.LCfolder,'LSST.LIST'),'w')
                 listsn.writelines(listout)
@@ -1052,88 +1059,92 @@ class SNclassification_metric(BaseMetric):
             CM = {z: pd.DataFrame(columns= ['Ia','Ibc','II','UKNOWN'], index= ['Ia','Ibc','II']) for z in slicePoint['zrange']}
             if len(listout) >0:
                 start_time_class = time.time()
+                #for l in listout:
+                    
                 try:
                     r = subprocess.check_output([os.environ['SNANA_DIR']+'/bin/psnid.exe', os.environ['LSST_DIR']+'/PSNID_LSST_'+self.name+'.nml'], stderr=subprocess.STDOUT)
-                
-                    
-                    # we search for classification flags in the variable r 
-                    line= np.array(r.split())
-                    custom_split = np.vectorize(self.custom_split)
-                    z_ = np.where(line==b'z_prior')
-                    sn_t = custom_split(x=line[z_[0]-1],c='_',index=0)
-                    z_t = custom_split(x=line[z_[0]-1],c='_',index=1)
-                    float_z = np.vectorize(float)
-                    Pbayes = float_z(line[np.where(line==b'PBayes')[0]+2])
-                    Pbayes= Pbayes.reshape((len(Pbayes)//3,3))
-                    z_t = float_z(z_t)
-                    z = np.unique(z_t)
-                    t = np.array(['Ia','Ibc','II'])
-                    # confusion matrix
-                    for zz in z:
-                        CM[zz]['Ia']['Ia']=0
-                        CM[zz]['Ibc']['Ia']=0
-                        CM[zz]['II']['Ia']=0
-                        CM[zz]['UKNOWN']['Ia']=0
-                        CM[zz]['Ia']['Ibc']=0
-                        CM[zz]['Ibc']['Ibc']=0
-                        CM[zz]['II']['Ibc']=0
-                        CM[zz]['UKNOWN']['Ibc']=0
-                        CM[zz]['Ia']['II']=0
-                        CM[zz]['Ibc']['II']=0
-                        CM[zz]['II']['II']=0
-                        CM[zz]['UKNOWN']['II']=0
-                        z_index = np.in1d(z_t,[zz])
-                        Pbayes_z = Pbayes[z_index,:]  
-                        Psum = Pbayes[z_index,:].sum(axis=1)
-                        unknown = Psum<0
-                        type_z= t[np.argmax(Pbayes_z,axis=1)]
-                        sn_Ia= np.in1d(sn_t,Ia)[z_index]
-                        sn_Ibc= np.in1d(sn_t,Ibc)[z_index]
-                        sn_II= np.in1d(sn_t,II)[z_index]
-                        CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia]=='Ia')/(np.nansum(sn_Ia))
-                        CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia]=='Ibc')/(np.nansum(sn_Ia))
-                        CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia]=='II')/(np.nansum(sn_Ia))
-                        CM[zz]['UKNOWN']['Ia']+=np.nansum(unknown[sn_Ia])/(np.nansum(sn_Ia))
-                        CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc]=='Ia')/(np.nansum(sn_Ibc))
-                        CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc]=='Ibc')/(np.nansum(sn_Ibc))
-                        CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc]=='II')/(np.nansum(sn_Ibc))
-                        CM[zz]['UKNOWN']['Ibc']+=np.nansum(unknown[sn_Ibc])/(np.nansum(sn_Ibc))
-                        CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II]=='Ia')/(np.nansum(sn_II))
-                        CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II]=='Ibc')/(np.nansum(sn_II))
-                        CM[zz]['II']['II']+=np.nansum(type_z[sn_II]=='II')/(np.nansum(sn_II))
-                        CM[zz]['UKNOWN']['II']+=np.nansum(unknown[sn_II])/(np.nansum(sn_II))
-                        CM[zz]=CM[zz].fillna(0)
-                        for ty in ['Ia','Ibc','II']:                          
-                            if ty=='Ia':
-                                bty = sn_Ia
-                               
-                            if ty=='Ibc':
-                                bty = sn_Ibc
-                                
-                            if ty=='II':
-                                bty = sn_II                               
-                            nClassified=np.array(0, dtype=[(ty,'f4')])
-                            nClassified[ty]+= np.nansum(type_z[bty]==ty)
-                            nUnClassified = classify['nFiltered'][zz]['filtered_class'][ty]-nClassified[ty]
-                            classify['nClassified'][zz]['classified'][ty]+= nClassified[ty]
-                            classify['nClassified'][zz]['unclassified'][ty]+= nUnClassified 
 
-                    print('________________________________________')
-
-                    #print('\n correctly classified at z ={} for ty= {}, {}-like: {} '.format(z, ty, sn, classify[ty][float(z)]))
-
-                    print('total SNe simulated: {}; lost SNe: {}'.format(sn_list, lost))
-
-
-                    [[[print('z= '+str(k)+' type='+t),print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'][t],
-                    classify['nDet'][k]['UnDetected'][t],classify['nFiltered'][k]['filtered_class'][t] ,
-                    classify['nFiltered'][k]['not_filtered_class'][t],
-                    classify['nClassified'][k]['classified'][t],classify['nClassified'][k]['unclassified'][t]))]  for t in ['Ia','Ibc','II']] for k in CM.keys()]
-                    
-                    [[print('z= '+str(k)), print(CM[k])] for k in CM.keys()]
-                    print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
+                    fsnana= open('snana.out','wb')
+                    fsnana.write(r)
+                    fsnana.close()
                 except subprocess.CalledProcessError as e:
                     print(e.output)
+                
+                    # we search for classification flags in the variable r 
+                #r = open('snana.out', 'rb')
+                #r = r.read()
+                line= np.array(r.split())
+                custom_split = np.vectorize(self.custom_split)
+                z_ = np.where(line==b'z_prior')
+                sn_t = custom_split(x=line[z_[0]-1],c='_',index=0)
+                z_t = custom_split(x=line[z_[0]-1],c='_',index=1)
+                float_z = np.vectorize(float)
+                Pbayes = float_z(line[np.where(line==b'PBayes')[0]+2])
+                Pbayes= Pbayes.reshape((len(Pbayes)//3,3))
+                z_t = float_z(z_t)
+                z = np.unique(z_t)
+                types = np.array(['Ia','Ibc','II'])
+                # confusion matrix
+                for zz in z:
+                    CM[zz]['Ia']['Ia']=0
+                    CM[zz]['Ibc']['Ia']=0
+                    CM[zz]['II']['Ia']=0
+                    CM[zz]['UKNOWN']['Ia']=0
+                    CM[zz]['Ia']['Ibc']=0
+                    CM[zz]['Ibc']['Ibc']=0
+                    CM[zz]['II']['Ibc']=0
+                    CM[zz]['UKNOWN']['Ibc']=0
+                    CM[zz]['Ia']['II']=0
+                    CM[zz]['Ibc']['II']=0
+                    CM[zz]['II']['II']=0
+                    CM[zz]['UKNOWN']['II']=0
+                    z_index = np.in1d(z_t,[zz])
+                    Pbayes_z = Pbayes[z_index]  
+                    Psum = Pbayes[z_index].sum(axis=1)
+                    unknown = Psum<0
+                    type_z = types[np.argmax(Pbayes_z[Psum>0],axis=1)] 
+                    sn_Ia= np.in1d(sn_t[z_index],Ia)
+                    sn_Ibc= np.in1d(sn_t[z_index],Ibc)
+                    sn_II= np.in1d(sn_t[z_index],II)
+                    CM[zz]['Ia']['Ia']+=np.nansum(type_z[sn_Ia[Psum>0]]=='Ia')/(np.nansum(sn_Ia))
+                    CM[zz]['Ibc']['Ia']+=np.nansum(type_z[sn_Ia[Psum>0]]=='Ibc')/(np.nansum(sn_Ia))
+                    CM[zz]['II']['Ia']+=np.nansum(type_z[sn_Ia[Psum>0]]=='II')/(np.nansum(sn_Ia))
+                    CM[zz]['UKNOWN']['Ia']+=np.nansum(unknown[sn_Ia])/(np.nansum(sn_Ia))
+                    CM[zz]['Ia']['Ibc']+=np.nansum(type_z[sn_Ibc[Psum>0]]=='Ia')/(np.nansum(sn_Ibc))
+                    CM[zz]['Ibc']['Ibc']+=np.nansum(type_z[sn_Ibc[Psum>0]]=='Ibc')/(np.nansum(sn_Ibc))
+                    CM[zz]['II']['Ibc']+=np.nansum(type_z[sn_Ibc[Psum>0]]=='II')/(np.nansum(sn_Ibc))
+                    CM[zz]['UKNOWN']['Ibc']+=np.nansum(unknown[sn_Ibc])/(np.nansum(sn_Ibc))
+                    CM[zz]['Ia']['II']+=np.nansum(type_z[sn_II[Psum>0]]=='Ia')/(np.nansum(sn_II))
+                    CM[zz]['Ibc']['II']+=np.nansum(type_z[sn_II[Psum>0]]=='Ibc')/(np.nansum(sn_II))
+                    CM[zz]['II']['II']+=np.nansum(type_z[sn_II[Psum>0]]=='II')/(np.nansum(sn_II))
+                    CM[zz]['UKNOWN']['II']+=np.nansum(unknown[sn_II])/(np.nansum(sn_II))
+                    CM[zz]=CM[zz].fillna(0)
+                    for ty in ['Ia','Ibc','II']:                          
+                        if ty=='Ia':
+                            bty = sn_Ia
+
+                        if ty=='Ibc':
+                            bty = sn_Ibc
+
+                        if ty=='II':
+                            bty = sn_II                               
+                        nClassified=np.array(0, dtype=[(ty,'f4')])
+                        nUnClassified=np.array(0, dtype=[(ty,'f4')])
+                        for t in ['Ia','Ibc','II']: 
+                            nClassified[ty]+= np.nansum(type_z[bty[Psum>0]]==t)
+                        nUnClassified[ty] += np.nansum(unknown[bty])
+                        classify['nClassified'][zz]['classified'][ty]+= nClassified[ty]
+                        classify['nClassified'][zz]['unclassified'][ty]+= nUnClassified[ty] 
+
+                print('________________________________________')
+
+                
+                
+                [[[print('z= '+str(k)+' type='+t),print('total SNe simulated: {}; '.format(sn_list[t][k])) ,print('lost SNe = '+ str(lost[t][k])), print('Detected={} UnDetected={} filtered_class={} not_filtered_class={} classified={} unclassified={}'.format(classify['nDet'][k]['Detected'][t],classify['nDet'][k]['UnDetected'][t],classify['nFiltered'][k]['filtered_class'][t] ,classify['nFiltered'][k]['not_filtered_class'][t],classify['nClassified'][k]['classified'][t],classify['nClassified'][k]['unclassified'][t]))]  for t in ['Ia','Ibc','II']] for k in CM.keys()]
+
+                [[print('z= '+str(k)), print(CM[k])] for k in CM.keys()]
+                print("\n --- {:.2f} minutes ---\n".format((float(time.time()) - float(start_time_class))/60))
+                
             else:
                 print('\n  no classifiable lc ')
             if self.dataout:
