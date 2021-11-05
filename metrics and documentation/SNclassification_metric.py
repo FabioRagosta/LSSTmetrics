@@ -14,7 +14,7 @@ import lsst.sims.maf.metricBundles as metricBundles
 import lsst.sims.maf.db as db
 import lsst.sims.maf.plots as plots
 from lsst.sims.maf.utils import m52snr, radec2pix
-from lsst.sims.photUtils import Bandpass, SignalToNoise, PhotometricParameters
+from lsst.sims.photUtils import Bandpass, SignalToNoise, PhotometricParameters, calcMagError_m5, calcGamma
 from itertools import groupby
 os.environ['SNANA_DIR']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNANA'
 os.environ['SNDATA_ROOT']='/home/idies/workspace/Storage/fragosta/persistent/LSST_OpSim/Scripts_NBs/SNRate_Simulations/SNDATA_ROOT'
@@ -822,8 +822,9 @@ class SNclassification_metric(BaseMetric):
                              True, True], inplace=True)
 
         return coadd_df.to_records(index=False)
-    def sim_mag_noise(self,mag, snr):
-        noise = 1.08/snr
+    def sim_mag_noise(self,mag, m5):
+        gamma = np.array([calcGamma(self.bandpass, m, self.photparam) for m in m5])
+        noise, _= calcMagError_m5(mag, self.bandpass, m5, self.photparam, gamma=gamma)
         mag_from_dist = np.random.multivariate_normal(mag, np.identity(mag.size)*noise)
         return mag_from_dist
     def custom_split(self,x='',c='',index=0):
@@ -1006,12 +1007,13 @@ class SNclassification_metric(BaseMetric):
                         for f in filterNames:
                             filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
                             if lcMags_temp[lcpoints_AboveThresh][filtermatch].size>1:
-                                mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],lcSNR[lcpoints_AboveThresh][filtermatch])
+                                mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],obs_m5[indexlc][filtermatch])
                             else:
                                 mag[f] = lcMags_temp[lcpoints_AboveThresh][filtermatch]
                             jd[f] = obs[indexlc][lcpoints_AboveThresh][filtermatch]
                             snr[f]= lcSNR[lcpoints_AboveThresh][filtermatch]
-                            merr[f] = np.sqrt((1./snr[f])**2+(10**(-0.4*mag[f]))*dataSlice[self.vistimeCol][filtermatch])
+                            gamma = np.array([calcGamma(self.bandpass, m, self.photparam) for m in obs_m5[indexlc][filtermatch]])
+                            merr[f], _= calcMagError_m5(mag[f], bandpass, obs_m5[indexlc][filtermatch], photparam, gamma=gamma)
 
                             for h,j in enumerate(jd[f]):
 
