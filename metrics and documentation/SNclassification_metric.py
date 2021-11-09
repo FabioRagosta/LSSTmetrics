@@ -707,7 +707,7 @@ class SNclassification_metric(BaseMetric):
                                                        **kwargs)
         
         
-        self.bandpass = Bandpass(wavelen=np.array([480.2,623.1,754.2]),sb=np.array([0.1,0.1,0.1]),wavelen_min=400, wavelen_max=800, wavelen_step=10)
+        self.bandpass = Bandpass(wavelen=np.array([480.2,623.1,754.2]),sb=np.array([0.1,0.1,0.1]),wavelen_min=380, wavelen_max=850, wavelen_step=10)
         self.photparam = PhotometricParameters() 
         # PSNID setup
         if not os.path.exists(self.LCfolder):
@@ -826,7 +826,7 @@ class SNclassification_metric(BaseMetric):
         gamma = np.array([calcGamma(self.bandpass, m, self.photparam) for m in m5])
         noise, _= calcMagError_m5(mag, self.bandpass, m5, self.photparam, gamma=gamma)
         mag_from_dist = np.random.multivariate_normal(mag, np.identity(mag.size)*noise)
-        return mag_from_dist
+        return (mag_from_dist, noise)
     def custom_split(self,x='',c='',index=0):
         x=x.decode("utf-8")
         return x.split(c)[index]
@@ -1007,13 +1007,13 @@ class SNclassification_metric(BaseMetric):
                         for f in filterNames:
                             filtermatch = np.where(obs_filter[indexlc][lcpoints_AboveThresh] == f)
                             if lcMags_temp[lcpoints_AboveThresh][filtermatch].size>1:
-                                mag[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],obs_m5[indexlc][filtermatch])
+                                mag[f], merr[f] = self.sim_mag_noise(lcMags_temp[lcpoints_AboveThresh][filtermatch],obs_m5[indexlc][filtermatch])
                             else:
                                 mag[f] = lcMags_temp[lcpoints_AboveThresh][filtermatch]
                             jd[f] = obs[indexlc][lcpoints_AboveThresh][filtermatch]
                             snr[f]= lcSNR[lcpoints_AboveThresh][filtermatch]
                             gamma = np.array([calcGamma(self.bandpass, m, self.photparam) for m in obs_m5[indexlc][filtermatch]])
-                            merr[f], _= calcMagError_m5(mag[f], bandpass, obs_m5[indexlc][filtermatch], photparam, gamma=gamma)
+                            #merr[f], _= calcMagError_m5(mag[f], bandpass, obs_m5[indexlc][filtermatch], photparam, gamma=gamma)
 
                             for h,j in enumerate(jd[f]):
 
